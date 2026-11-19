@@ -1,6 +1,11 @@
 package org.shalim.trust;
 
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
+import org.shalim.crypto.Bytes;
+import org.shalim.crypto.Canonical;
+import org.shalim.crypto.Prf;
 
 /**
  * An anonymous credential that says "an ordinary member of this hub" without
@@ -12,36 +17,24 @@ import java.time.LocalDate;
  * <p>The prober's anonymity is only as large as the set of people who could
  * have produced the same proof. If only probers held credentials, holding one
  * would identify them. So the hub issues a fresh credential to every MEMBER
- * and MODERATOR on sync, automatically, every day, and nothing about fetching
- * one distinguishes a prober from anyone else.
+ * and MODERATOR on sync, automatically, every day.
  *
  * <h2>What it certifies</h2>
  * <ul>
- *   <li>{@code hubKeyFingerprint} — the issuing hub.</li>
- *   <li>{@code roleClass} — ORDINARY (MEMBER or MODERATOR). ADMINs and GUESTs
- *       are not issued one at all, so "not an admin there" needs no separate
- *       check: an admin simply cannot present.</li>
- *   <li>{@code joinedWeek} — week of joining, coarse. Lets a proof show the
- *       member joined at least {@code AuditSchedule.minProberMembershipDays}
- *       ago without disclosing when, so a link set up the week after someone
- *       joined does not point at them.</li>
- *   <li>{@code attested} — whether the member's account key passed a device
- *       attestation at issuance (see {@link org.shalim.identity.DeviceBinding}).
- *       Hidden in presentations except as the predicate "attested = true".</li>
- *   <li>{@code epoch} — the day. Credentials expire daily, which is how
- *       promotion to admin ends eligibility the same day without a
- *       revocation list: the promoted member simply stops being issued one.</li>
- *   <li>A hidden member secret, committed at join, from which
+ *   <li>{@code hubKeyFingerprint}: the issuing hub.</li>
+ *   <li>{@code roleClass}: ORDINARY (MEMBER or MODERATOR). ADMINs and GUESTs
+ *       are not issued one, so an admin there simply cannot present.</li>
+ *   <li>{@code joinedWeek}: week of joining, coarse, proved only as "long
+ *       enough ago".</li>
+ *   <li>{@code attested}: proved only as the predicate "attested = true".</li>
+ *   <li>{@code epoch}: the day. Credentials expire daily, which is how
+ *       promotion to admin ends eligibility the same day.</li>
+ *   <li>A hidden member secret, committed at join, from which pseudonyms and
  *       {@link EpochNullifier}s are derived.</li>
  * </ul>
  *
- * <h2>Scheme</h2>
- *
- * <p>BBS signatures (IRTF CFRG draft) with blind issuance for the secret and
- * per-context pseudonyms. Chosen because BBS supports hiding attributes,
- * proving predicates over them and deriving a pseudonym per verifier context
- * from one hidden secret. Java support is thin; the reference plan is a Rust
- * implementation behind JNI. Scheme choice is still open; see the README.
+ * <p>The proof itself comes from a {@link MemberCredentialScheme}; with none
+ * bound, {@link #presentEligibility} returns null.
  */
 public class MemberCredential {
 
@@ -50,56 +43,92 @@ public class MemberCredential {
         ORDINARY
     }
 
-    private String hubKeyFingerprint;
-    private RoleClass roleClass;
-    private int joinedWeek;
-    private boolean attested;
-    private LocalDate epoch;
+    /** Weeks are counted from this Monday, so joinedWeek is a small integer. */
+    static final LocalDate WEEK_ZERO = LocalDate.of(2024, 1, 1);
 
-    /** Opaque BBS signature over the attributes and the committed secret. */
-    private byte[] signature;
+    private final String hubKeyFingerprint;
+    private final RoleClass roleClass;
+    private final int joinedWeek;
+    private final boolean attested;
+    private final LocalDate epoch;
+
+    /** Opaque scheme signature over the attributes and the committed secret. */
+    private final byte[] signature;
 
     /** Never leaves the device. Held in the hardware keystore alongside the account key. */
     private transient byte[] memberSecret;
 
-    public MemberCredential() {
-        // TODO: pseudo-code
+    public MemberCredential(String hubKeyFingerprint, RoleClass roleClass, int joinedWeek, boolean attested,
+                            LocalDate epoch, byte[] signature) {
+        this.hubKeyFingerprint = hubKeyFingerprint;
+        this.roleClass = roleClass;
+        this.joinedWeek = joinedWeek;
+        this.attested = attested;
+        this.epoch = epoch;
+        this.signature = signature == null ? null : signature.clone();
+    }
+
+    /** Device side: attaches the member's own secret on receipt. */
+    public MemberCredential holding(byte[] secret) {
+        this.memberSecret = secret == null ? null : secret.clone();
+        return this;
+    }
+
+    public static int weekOf(LocalDate day) {
+        return (int) ChronoUnit.WEEKS.between(WEEK_ZERO, day);
+    }
+
+    /** Latest joinedWeek that satisfies "member for at least minMembershipDays". */
+    public static int maxJoinedWeek(LocalDate today, int minMembershipDays) {
+        // A whole week earlier than the boundary week, so a coarse week never
+        // admits someone a few days short.
+        return weekOf(today.minusDays(minMembershipDays)) - 1;
+    }
+
+    /** Stable for (member, target, auditor): what the target records the link under. */
+    public static String linkPseudonym(byte[] memberSecret, String targetKeyFingerprint,
+                                       String auditorKeyFingerprint) {
+        return Bytes.hex(Prf.hmac(memberSecret, Canonical.of("shalim.pseudonym.link.v1")
+                .hex(targetKeyFingerprint).hex(auditorKeyFingerprint).encode()));
+    }
+
+    /** Stable for (member, target), whatever the auditing hub: one member carries one link. */
+    public static String proberPseudonym(byte[] memberSecret, String targetKeyFingerprint) {
+        return Bytes.hex(Prf.hmac(memberSecret, Canonical.of("shalim.pseudonym.prober.v1")
+                .hex(targetKeyFingerprint).encode()));
+    }
+
+    /** The values a proof must bind to the hidden secret, in a fixed order. */
+    static List<byte[]> boundValues(String linkPseudonym, String proberPseudonym, EpochNullifier n) {
+        return List.of(Bytes.fromHex(linkPseudonym), Bytes.fromHex(proberPseudonym),
+                Bytes.fromHex(n.getNullifier()), n.getShareX(), n.getShareY());
     }
 
     /**
      * Produces the anonymous proof a target hub checks when a link is set up,
-     * and again on every day the link runs.
-     *
-     * @param context the verifier context: target hub key, auditing hub key and
-     *                purpose. The pseudonym is stable within a context and
-     *                unlinkable across contexts.
+     * and again on every day the link runs. Null if stale, if the device holds
+     * no secret, if no scheme is bound, or if the predicates cannot be met.
      */
-    public EligibilityProof presentEligibility(String auditingHubKeyFingerprint, LocalDate today,
-                                               int minMembershipDays, byte[] context,
-                                               byte[] challenge) {
-        // PSEUDO-CODE
-        // IF epoch != today -> RETURN null   // stale; refresh on next sync
-        // proof = BBS.proofGen(signature,
-        //    disclosed  = { hubKeyFingerprint, roleClass, epoch },
-        //    predicates = { attested == true,
-        //                   joinedWeek <= week(today - minMembershipDays) },
-        //    hidden     = { joinedWeek, attested, memberSecret },
-        //    challenge)
-        // linkPseudonym = pseudonym(memberSecret, context = target||auditor||"link")
-        //    // Same member, same pair of hubs -> same pseudonym, so one member
-        //    // cannot register as two probers for one auditing hub.
-        // proberPseudonym = pseudonym(memberSecret, context = target||"prober")
-        //    // Same member, any auditing hub -> same pseudonym, so one ordinary
-        //    // member of the target cannot carry links for several hubs. The
-        //    // "recruit a friend" Sybil route now costs one friend per hub.
-        // nullifier = EpochNullifier.derive(memberSecret, target, today, challenge)
-        // RETURN EligibilityProof(proof, linkPseudonym, proberPseudonym, nullifier)
-        return null;
+    public EligibilityProof presentEligibility(MemberCredentialScheme scheme, String auditingHubKeyFingerprint,
+                                               LocalDate today, int minMembershipDays, byte[] challenge) {
+        if (scheme == null || memberSecret == null || !isCurrent(today) || challenge == null
+                || joinedWeek > maxJoinedWeek(today, minMembershipDays)) {
+            return null; // the device knows it is too new; see ProberCredentials.whyNot
+        }
+        String link = linkPseudonym(memberSecret, hubKeyFingerprint, auditingHubKeyFingerprint);
+        String prober = proberPseudonym(memberSecret, hubKeyFingerprint);
+        EpochNullifier n = EpochNullifier.derive(memberSecret, hubKeyFingerprint, today, challenge);
+        byte[] proof = scheme.prove(this, memberSecret, maxJoinedWeek(today, minMembershipDays), challenge,
+                boundValues(link, prober, n));
+        if (proof == null) {
+            return null;
+        }
+        return new EligibilityProof(hubKeyFingerprint, auditingHubKeyFingerprint, today, proof, link, prober, n,
+                challenge);
     }
 
     public boolean isCurrent(LocalDate today) {
-        // TODO: pseudo-code
-        return false;
+        return epoch != null && epoch.equals(today);
     }
 
     public String getHubKeyFingerprint() {
@@ -116,5 +145,13 @@ public class MemberCredential {
 
     public boolean isAttested() {
         return attested;
+    }
+
+    public int getJoinedWeek() {
+        return joinedWeek;
+    }
+
+    public byte[] getSignature() {
+        return signature == null ? null : signature.clone();
     }
 }

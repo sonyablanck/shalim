@@ -43,12 +43,53 @@ public class ResourceInteraction {
     private UserSkill.Proficiency awardedProficiency;
 
     public ResourceInteraction() {
-        // TODO: pseudo-code
+        this.interactionId = org.shalim.crypto.Bytes.randomId();
+        this.status = Status.PENDING;
     }
 
     public ResourceInteraction(String hubId, String userKeyFingerprint, String resourceId,
                                Instant occurredAt) {
-        // TODO: pseudo-code
+        this();
+        this.hubId = hubId;
+        this.userKeyFingerprint = userKeyFingerprint;
+        this.resourceId = resourceId;
+        this.occurredAt = occurredAt;
+    }
+
+    void setNote(String note) {
+        this.note = note;
+    }
+
+    void decide(Status outcome, String byUserId, UserSkill.Proficiency proficiency, Instant at) {
+        this.status = outcome;
+        this.verifiedByUserId = byUserId;
+        this.awardedProficiency = proficiency;
+        this.decidedAt = at;
+    }
+
+    public String getNote() {
+        return note;
+    }
+
+    public Instant getOccurredAt() {
+        return occurredAt;
+    }
+
+    public Instant getDecidedAt() {
+        return decidedAt;
+    }
+
+    public String getVerifiedByUserId() {
+        return verifiedByUserId;
+    }
+
+    /** Restores a persisted pending interaction. Persistence only. */
+    public static ResourceInteraction restore(String id, String hubId, String user, String resourceId, String note,
+                                              Instant occurredAt) {
+        ResourceInteraction i = new ResourceInteraction(hubId, user, resourceId, occurredAt);
+        i.interactionId = id;
+        i.note = note;
+        return i;
     }
 
     public boolean isPending() {

@@ -135,12 +135,26 @@ public class AuditAnomaly {
     /** Plain-language account for the admin, and for an appeal afterwards. */
     private String explanation;
 
+    /** When the evidence was observed. Revocation needs evidence dated after suspension began. */
+    private java.time.Instant observedAt;
+
+    /** Replay: the peer's day the leaf belongs to. Null otherwise. */
+    private java.time.LocalDate day;
+
+    /** OPENING_WITHHELD: whether the opening was withheld again on a retry. */
+    private boolean confirmedOnRetry;
+
     public AuditAnomaly() {
-        // TODO: pseudo-code
+        this.anomalyId = org.shalim.crypto.Bytes.randomId();
+        this.probeIds = new java.util.ArrayList<>();
+        this.pValue = 1.0;
     }
 
     public AuditAnomaly(Kind kind, Attribution attribution, double observedRate) {
-        // TODO: pseudo-code
+        this();
+        this.kind = kind;
+        this.attribution = attribution;
+        this.observedRate = observedRate;
     }
 
     /**
@@ -150,18 +164,20 @@ public class AuditAnomaly {
      * has built a random number generator with consequences attached.
      */
     public boolean isConclusive() {
-        // PSEUDO-CODE
-        // IF attribution != PEER -> RETURN false
-        // IF kind IN (REPLAY_MISMATCH, EQUIVOCATION, UNLOGGED_DECISION)
-        //    RETURN true   // not statistical; one verified instance suffices
-        // IF kind == OPENING_WITHHELD -> RETURN withheld again after a retry
-        // RETURN kind IN (UNDER_BLOCKING, OVER_BLOCKING, DEGENERATE_CONFIDENCE,
-        //                 PROBE_DETECTION)
-        //    AND observedRate > threshold
-        //    AND pValue < 0.01
-        //        // One in a hundred, not one in twenty. Daily assessment over a
-        //        // year is hundreds of chances to be wrong about a hub.
-        return false;
+        if (attribution != Attribution.PEER) {
+            return false;
+        }
+        return switch (kind) {
+            // Not statistical: one verified instance suffices.
+            case REPLAY_MISMATCH, EQUIVOCATION, UNLOGGED_DECISION -> true;
+            // A flat battery mid-sync is not a refusal.
+            case OPENING_WITHHELD -> confirmedOnRetry;
+            // One in a hundred, not one in twenty: daily assessment over a year
+            // is hundreds of chances to be wrong about a hub.
+            case UNDER_BLOCKING, OVER_BLOCKING, DEGENERATE_CONFIDENCE, PROBE_DETECTION ->
+                    observedRate > threshold && pValue < 0.01;
+            case CATEGORY_DISAGREEMENT, PIN_DIVERGENCE, INSUFFICIENT_SAMPLE -> false;
+        };
     }
 
     /**
@@ -171,8 +187,54 @@ public class AuditAnomaly {
      * corpus was introduced to prevent.
      */
     public boolean concernsAuditor() {
-        // TODO: pseudo-code
-        return false;
+        return attribution == Attribution.LOCAL || attribution == Attribution.BOTH;
+    }
+
+    /** A finding about one replayed leaf, a receipt or a head. */
+    public static AuditAnomaly of(Kind kind, Attribution attribution, String runId, java.time.LocalDate day,
+                                  String explanation, java.time.Instant now) {
+        AuditAnomaly a = new AuditAnomaly(kind, attribution, 1.0);
+        a.runId = runId;
+        a.day = day;
+        a.explanation = explanation;
+        a.observedAt = now;
+        a.pValue = 0.0;
+        return a;
+    }
+
+    /** A statistical finding: a rate, its threshold and its p-value. */
+    public static AuditAnomaly statistical(Kind kind, Attribution attribution, String runId, double rate,
+                                           double threshold, double pValue, List<String> probeIds,
+                                           String explanation, java.time.Instant now) {
+        AuditAnomaly a = new AuditAnomaly(kind, attribution, rate);
+        a.runId = runId;
+        a.threshold = threshold;
+        a.pValue = pValue;
+        a.probeIds = new java.util.ArrayList<>(probeIds);
+        a.explanation = explanation;
+        a.observedAt = now;
+        return a;
+    }
+
+    /** Marks an OPENING_WITHHELD as withheld again on the retry. */
+    void confirmOnRetry() {
+        this.confirmedOnRetry = true;
+    }
+
+    void setRunId(String runId) {
+        this.runId = runId;
+    }
+
+    public java.time.Instant getObservedAt() {
+        return observedAt;
+    }
+
+    public java.time.LocalDate getDay() {
+        return day;
+    }
+
+    public boolean isConfirmedOnRetry() {
+        return confirmedOnRetry;
     }
 
     // --- accessors --------------------------------------------------------

@@ -244,6 +244,18 @@ public class HubNetwork {
         this.disputed = false;
     }
 
+    /** Restores persisted state. Persistence only. */
+    public static HubNetwork restore(String networkId, String hubId, String ssid, java.util.List<String> hashes,
+                                     boolean hubOperated, boolean grantsGuestAccess, boolean encrypted,
+                                     Instant lastSeenAt, NetworkClaim claim, boolean disputed) {
+        HubNetwork n = new HubNetwork(hubId, ssid, hashes, hubOperated, grantsGuestAccess, encrypted);
+        n.networkId = networkId;
+        n.lastSeenAt = lastSeenAt;
+        n.claim = claim;
+        n.disputed = disputed;
+        return n;
+    }
+
     public java.util.List<String> getBssidHashes() {
         return java.util.List.copyOf(bssidHashes);
     }

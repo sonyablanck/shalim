@@ -61,21 +61,81 @@ public class Skill {
     }
 
     public Skill() {
-        // TODO: pseudo-code
+        this.skillId = org.shalim.crypto.Bytes.randomId();
+        this.resourceIds = new java.util.ArrayList<>();
+        this.derivedAt = Instant.now();
+        this.offered = true;
     }
 
     public Skill(String hubId, Origin origin, List<String> resourceIds, String label) {
-        // TODO: pseudo-code
+        this();
+        this.hubId = hubId;
+        this.origin = origin == null ? Origin.RESOURCE : origin;
+        this.resourceIds = new java.util.ArrayList<>(resourceIds);
+        this.label = label;
     }
 
     /** Whether any resource behind this skill is currently available. */
     public boolean isBackedBy(List<HubResource> resources) {
-        // TODO: pseudo-code
+        for (HubResource r : resources) {
+            if (r.isAvailable() && resourceIds.contains(r.getResourceId())) {
+                return true;
+            }
+        }
         return false;
     }
 
     public void setOffered(boolean offered) {
-        // TODO: pseudo-code
+        this.offered = offered;
+    }
+
+    public void setTaxonomyTerm(String term) {
+        this.taxonomyTerm = term;
+    }
+
+    public void setNormalisedText(String text) {
+        this.normalisedText = text;
+    }
+
+    public void setDerivedBy(String pinHash, Instant at) {
+        this.derivedByPinHash = pinHash;
+        this.derivedAt = at;
+    }
+
+    public void setCensorVerdictId(String verdictId) {
+        this.censorVerdictId = verdictId;
+    }
+
+    public void setLabel(String label) {
+        this.label = label;
+    }
+
+    public void setResourceIds(List<String> ids) {
+        this.resourceIds = new java.util.ArrayList<>(ids);
+    }
+
+    /** Keeps an existing id across re-derivation, so pending interactions stay valid. */
+    void adoptId(String id) {
+        this.skillId = id;
+    }
+
+    public String getDerivedByPinHash() {
+        return derivedByPinHash;
+    }
+
+    /** Restores persisted state. Persistence only. */
+    public static Skill restore(String skillId, String hubId, Origin origin, List<String> resourceIds, String label,
+                                String term, String normalised, boolean offered, Instant derivedAt, String pin,
+                                String verdictId) {
+        Skill s = new Skill(hubId, origin, resourceIds, label);
+        s.skillId = skillId;
+        s.taxonomyTerm = term;
+        s.normalisedText = normalised;
+        s.offered = offered;
+        s.derivedAt = derivedAt;
+        s.derivedByPinHash = pin;
+        s.censorVerdictId = verdictId;
+        return s;
     }
 
     // --- accessors --------------------------------------------------------

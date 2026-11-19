@@ -153,6 +153,19 @@ public class DeviceBinding {
         boundAt = null;
     }
 
+    /**
+     * Restores the slot kind recorded in the device store at the last run. Only
+     * GUEST may be restored over the REGISTERED reading the constructor takes,
+     * and only while the key is still there.
+     */
+    public boolean restoreSlot(Slot kind) {
+        if (kind == Slot.GUEST && slot == Slot.REGISTERED && keyStore.contains(ACCOUNT_KEY_ALIAS)) {
+            slot = Slot.GUEST;
+            return true;
+        }
+        return kind == slot;
+    }
+
     /** Whether the account key can produce a hardware key attestation at all. */
     public boolean canAttest() {
         return slot != Slot.EMPTY && keyStore.isHardwareBacked();

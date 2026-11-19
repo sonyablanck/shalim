@@ -27,6 +27,15 @@ public final class TestRunner {
         "org.shalim.transport.NetworkClaimsOverTheAirTest",
         "org.shalim.transport.SyncServiceTest",
         "org.shalim.transport.LanTransportTest",
+        "org.shalim.identity.RolesAndRestrictionsTest",
+        "org.shalim.hub.PolicyAndPremisesTest",
+        "org.shalim.hub.HubCoreTest",
+        "org.shalim.query.MeetingsTest",
+        "org.shalim.attestation.AttestationFlowTest",
+        "org.shalim.store.StoreTest",
+        "org.shalim.trust.TrustPrimitivesTest",
+        "org.shalim.hub.ProvisionalStatusTest",
+        "org.shalim.trust.AuthenticationFlowTest",
     };
 
     private TestRunner() {

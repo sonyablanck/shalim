@@ -17,6 +17,12 @@ public class QueryContext {
     private final Membership membership;
     private final Instant now;
 
+    /** Set by the censor gate; attached to whatever result leaves the pipeline. */
+    private org.shalim.hub.CensorDecisionLog.Receipt censorReceipt;
+
+    /** Set by the integrity gate when policy says to hold results rather than show them. */
+    private boolean holdResults;
+
     public QueryContext(Hub hub, HubRuntime runtime, HubQuery query, Membership membership, Instant now) {
         this.hub = hub;
         this.runtime = runtime;
@@ -43,5 +49,21 @@ public class QueryContext {
 
     public Instant getNow() {
         return now;
+    }
+
+    public org.shalim.hub.CensorDecisionLog.Receipt getCensorReceipt() {
+        return censorReceipt;
+    }
+
+    public void setCensorReceipt(org.shalim.hub.CensorDecisionLog.Receipt receipt) {
+        this.censorReceipt = receipt;
+    }
+
+    public boolean isHoldResults() {
+        return holdResults;
+    }
+
+    public void setHoldResults(boolean hold) {
+        this.holdResults = hold;
     }
 }

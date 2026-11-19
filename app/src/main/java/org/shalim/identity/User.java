@@ -60,6 +60,9 @@ public abstract class User {
     protected User() {
         this.memberships = new java.util.ArrayList<>();
         this.createdAt = Instant.now();
+        this.ageAssurance = new AgeAssurance();
+        this.wallet = new org.shalim.attestation.AttestationWallet();
+        this.skillProfile = new org.shalim.skills.SkillProfile();
     }
 
     /**
@@ -82,6 +85,8 @@ public abstract class User {
         this.accountPublicKey = accountKey.publicKey();
         this.userId = accountKey.fingerprint();
         this.displayName = displayName;
+        this.wallet = new org.shalim.attestation.AttestationWallet(userId);
+        this.skillProfile = new org.shalim.skills.SkillProfile(userId);
     }
 
     /** Distinguishes a full account from a device-bound guest. */
@@ -90,53 +95,88 @@ public abstract class User {
     // --- memberships ------------------------------------------------------
 
     public Optional<Membership> membershipIn(String hubId) {
-        // TODO: pseudo-code
-        return Optional.empty();
+        if (hubId == null) {
+            return Optional.empty();
+        }
+        return memberships.stream().filter(m -> hubId.equals(m.getHubId())).findFirst();
     }
 
     public List<Membership> getMemberships() {
-        // TODO: pseudo-code
-        return memberships;
+        return List.copyOf(memberships);
     }
 
+    /** The hubs this person belongs to, as this device knows them. */
+    public java.util.Set<String> hubIds() {
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        for (Membership m : memberships) {
+            ids.add(m.getHubId());
+        }
+        return ids;
+    }
+
+    /**
+     * Records a membership on this device. The hub records its own copy in its
+     * roster; see {@code HubAdministration.admit}. Joining twice returns the
+     * existing membership unchanged.
+     */
     public Membership join(String hubId, Role initialRole) {
-        // TODO: pseudo-code
-        return null;
+        Optional<Membership> existing = membershipIn(hubId);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        Membership m = new Membership(userId, hubId, initialRole);
+        m.bindHubSet(this::hubIds);
+        memberships.add(m);
+        return m;
+    }
+
+    /** Adopts a membership record (from persistence or an upgrade), binding it to this user's hub set. */
+    public void adopt(Membership membership) {
+        if (membership != null && membershipIn(membership.getHubId()).isEmpty()) {
+            membership.bindHubSet(this::hubIds);
+            memberships.add(membership);
+        }
+    }
+
+    /**
+     * Leaves a hub on this device.
+     *
+     * @param hubIssuerKeyFingerprint the departed hub's issuer key, whose proofs
+     *                                the wallet drops; null if unknown
+     */
+    public boolean leave(String hubId, String hubIssuerKeyFingerprint) {
+        Optional<Membership> membership = membershipIn(hubId);
+        if (membership.isEmpty()) {
+            return false;
+        }
+        memberships.remove(membership.get());
+        if (hubIssuerKeyFingerprint != null && wallet != null) {
+            // Drops the proof the departed hub issued. If that hub was flagged,
+            // the stale proof goes with it; if it was healthy, the user simply
+            // re-proves elsewhere.
+            wallet.forgetIssuer(hubIssuerKeyFingerprint);
+        }
+        // Earned skill credentials are NOT dropped. A skill earned at a hub is
+        // the person's, and leaving the hub does not unlearn it.
+        //
+        // Restrictions with discharge LEAVE_ORIGIN_HUB on the remaining
+        // memberships re-evaluate by themselves: activeRestrictions() reads
+        // hubIds() each time. The check is local, so no other hub is told.
+        return true;
     }
 
     public boolean leave(String hubId) {
-        // PSEUDO-CODE
-        //
-        // 1. membership = membershipIn(hubId); IF absent RETURN false
-        // 2. remove membership from the list
-        // 3. wallet.forgetIssuer(that hub's issuer fingerprint)
-        //    // Earned skill credentials are NOT dropped. A skill earned at a hub
-        //    // is the person's, and leaving the hub does not unlearn it.
-        //       // Drops the proof the departed hub issued. If that hub was
-        //       // flagged, the stale proof goes with it; if it was healthy,
-        //       // the user simply re-proves elsewhere.
-        // 4. FOR EACH remaining membership
-        //       re-evaluate restrictions with discharge == LEAVE_ORIGIN_HUB
-        //       // This is where leaving a flagged hub lifts the cap. The check
-        //       // is local: the user's own device knows which hubs it is in,
-        //       // so no other hub has to be told anything.
-        // 5. RETURN true
-        return false;
+        return leave(hubId, null);
     }
 
     /**
      * Effective permission check, scoped to one hub. Combines the membership's
-     * role, any active {@link Restriction}, and the hub's deployment policy.
-     * This is the single seam every caller should use.
+     * role and any active {@link Restriction}. The hub-level standing cap is
+     * applied hub-side ({@code Membership.can(permission, standing)}); this
+     * device-side check reflects what the person may attempt.
      */
     public boolean can(Permission permission, String hubId) {
-        // PSEUDO-CODE
-        // membership = membershipIn(hubId); IF absent RETURN false
-        // RETURN membership.can(permission)
-        //    // Membership.activeRestrictions() evaluates discharge conditions
-        //    // against this user's current hub set, so a cap from a hub they
-        //    // have left stops applying without anyone republishing anything.
-        return false;
+        return membershipIn(hubId).map(m -> m.can(permission)).orElse(false);
     }
 
     // --- keys -------------------------------------------------------------
@@ -198,6 +238,22 @@ public abstract class User {
 
     public org.shalim.attestation.AttestationWallet getWallet() {
         return wallet;
+    }
+
+    public void setAgeAssurance(AgeAssurance assurance) {
+        this.ageAssurance = assurance == null ? new AgeAssurance() : assurance;
+    }
+
+    public void setDisplayName(String displayName) {
+        this.displayName = displayName;
+    }
+
+    public void setDeviceBinding(DeviceBinding binding) {
+        this.deviceBinding = binding;
+    }
+
+    public DeviceBinding getDeviceBinding() {
+        return deviceBinding;
     }
 
     public org.shalim.skills.SkillProfile getSkillProfile() {

@@ -115,7 +115,7 @@ public class HubLog {
         NULLIFIER_DOUBLE_SPENT,
         RECIPROCITY_INVITE_SENT,
         RECIPROCITY_INVITE_ACCEPTED,
-        /** Standing moved between UNAUTHENTICATED, AUTHENTICATED and REVOKED. */
+        /** Standing moved between UNAUTHENTICATED, PROVISIONAL, AUTHENTICATED and REVOKED. */
         HUB_STANDING_CHANGED,
         /** A member or guest logged use of a hub resource, pending verification. */
         RESOURCE_INTERACTION_RECORDED,
@@ -127,7 +127,19 @@ public class HubLog {
         HUB_SKILLS_DERIVED,
         SYNC_COMPLETED,
         LOG_PRUNED,
-        HUB_EXPORTED
+        HUB_EXPORTED,
+        // --- added in stage 3 ---
+        RESOURCE_REMOVED,
+        /** Held query or meeting request released or refused by a moderator. */
+        CENSOR_HOLD_DECIDED,
+        MEETING_SCHEDULED,
+        /** A meeting was reported. No concern text in the log; moderators read it from the meeting. */
+        MEETING_REPORTED,
+        CONTACT_BLOCK_LIFTED,
+        MODERATION_OUTCOME_RECORDED,
+        MODERATION_OUTCOME_APPEALED,
+        MODERATION_OUTCOME_OVERTURNED,
+        AGE_ASSURANCE_ACCEPTED
     }
 
     /** One immutable, signed record. */
@@ -423,6 +435,23 @@ public class HubLog {
         entries.clear();
         headHash = null;
         anchorHash = null;
+    }
+
+    /**
+     * Restores persisted entries. Persistence only. Returns false, and leaves
+     * the log empty, if the restored chain does not verify: a tampered file is
+     * refused, not half-loaded.
+     */
+    public synchronized boolean restore(List<Entry> restored, String anchor, String head) {
+        entries.clear();
+        entries.addAll(restored);
+        anchorHash = anchor;
+        headHash = head;
+        if (!verifyChain()) {
+            wipe();
+            return false;
+        }
+        return true;
     }
 
     public String getHeadHash() {

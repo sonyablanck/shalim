@@ -298,6 +298,19 @@ public class NetworkClaim {
         return supersedesClaimId;
     }
 
+    public byte[] getHubSignature() {
+        return hubSignature == null ? null : hubSignature.clone();
+    }
+
+    /** Restores a persisted claim exactly. Persistence only; verify() still checks it. */
+    public static NetworkClaim restore(String claimId, String hubKeyFingerprint, List<String> hashes, Instant claimedAt,
+                                       String supersedes, List<Witness> witnesses, byte[] signature) {
+        NetworkClaim c = summary(claimId, hubKeyFingerprint, claimedAt, supersedes, witnesses);
+        c.saltedBssidHashes = new ArrayList<>(hashes);
+        c.hubSignature = signature == null ? null : signature.clone();
+        return c;
+    }
+
     public List<String> getSaltedBssidHashes() {
         return List.copyOf(saltedBssidHashes);
     }

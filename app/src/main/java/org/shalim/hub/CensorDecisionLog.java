@@ -623,6 +623,19 @@ public class CensorDecisionLog {
         return head;
     }
 
+    /**
+     * Closes every day up to and including {@code day} that has no head yet.
+     * The daily housekeeping call, so quiet days still get heads. A no-op if
+     * {@code day} is already closed.
+     */
+    public synchronized SignedTreeHead closeThrough(LocalDate day, Signer hubKey, Instant now) {
+        SignedTreeHead last = lastHead();
+        if (last != null && !day.isAfter(last.day)) {
+            return headFor(day);
+        }
+        return close(day, hubKey, now);
+    }
+
     // --- reading ----------------------------------------------------------
 
     /**
@@ -736,6 +749,36 @@ public class CensorDecisionLog {
 
     public String getHubKeyFingerprint() {
         return hubKeyFingerprint;
+    }
+
+    /**
+     * Everything this log holds, for persistence. Texts stay sealed under the
+     * at-rest key: the store never sees plaintext.
+     */
+    public record State(String hubKeyFingerprint, LocalDate openDay, List<Leaf> openLeaves, List<SignedTreeHead> heads,
+                        Map<LocalDate, List<Leaf>> closedLeaves, Map<LocalDate, Map<Long, byte[]>> sealedTexts,
+                        Map<LocalDate, Map<Long, byte[]>> padValues) {
+    }
+
+    public synchronized State exportState() {
+        Map<LocalDate, List<Leaf>> closed = new TreeMap<>(closedLeaves);
+        Map<LocalDate, Map<Long, byte[]>> texts = new TreeMap<>();
+        sealedTexts.forEach((d, m) -> texts.put(d, new TreeMap<>(m)));
+        Map<LocalDate, Map<Long, byte[]>> pads = new TreeMap<>();
+        padValues.forEach((d, m) -> pads.put(d, new TreeMap<>(m)));
+        return new State(hubKeyFingerprint, openDay, List.copyOf(openLeaves), List.copyOf(heads), closed, texts, pads);
+    }
+
+    /** Rebuilds a log from persisted state. The caller should then verify every head. */
+    public static CensorDecisionLog restore(State s) {
+        CensorDecisionLog log = new CensorDecisionLog(s.hubKeyFingerprint());
+        log.openDay = s.openDay();
+        log.openLeaves = new ArrayList<>(s.openLeaves());
+        log.heads = new ArrayList<>(s.heads());
+        s.closedLeaves().forEach((d, l) -> log.closedLeaves.put(d, Collections.unmodifiableList(new ArrayList<>(l))));
+        s.sealedTexts().forEach((d, m) -> log.sealedTexts.put(d, new HashMap<>(m)));
+        s.padValues().forEach((d, m) -> log.padValues.put(d, new HashMap<>(m)));
+        return log;
     }
 
     // --- internals --------------------------------------------------------

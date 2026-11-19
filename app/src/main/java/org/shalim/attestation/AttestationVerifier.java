@@ -34,27 +34,60 @@ public class AttestationVerifier {
         ABSENT
     }
 
+    /** Issuer key fingerprints this hub accepts proofs from: its trusted hubs' keys. */
+    private java.util.List<String> acceptedIssuers;
+
+    /** Looks up an issuer's public key by fingerprint, from cards and links this hub holds. */
+    private transient java.util.function.Function<String, byte[]> issuerKeys;
+
     public AttestationVerifier() {
-        // TODO: pseudo-code
+        this.acceptedIssuers = new java.util.ArrayList<>();
+        this.issuerKeys = fp -> null;
     }
 
     public AttestationVerifier(String hubId, HubPolicy policy) {
-        // TODO: pseudo-code
+        this();
+        this.hubId = hubId;
+        this.policy = policy;
+    }
+
+    /**
+     * @param acceptedIssuers issuer key fingerprints of hubs this hub trusts.
+     *                        The policy names trusted hubs by id; the runtime
+     *                        maps them to keys from cards and links (stage 4/5).
+     */
+    public AttestationVerifier(String hubId, HubPolicy policy, java.util.List<String> acceptedIssuers,
+                               java.util.function.Function<String, byte[]> issuerKeys) {
+        this(hubId, policy);
+        this.acceptedIssuers = new java.util.ArrayList<>(acceptedIssuers);
+        this.issuerKeys = issuerKeys;
     }
 
     /** Checks signature, subject binding, validity window, and issuer trust. */
     public Outcome verify(Attestation attestation, String expectedSubject, Instant now) {
-        // PSEUDO-CODE
-        //
-        // IF attestation == null -> RETURN ABSENT
-        // IF attestation.subjectKeyFingerprint != expectedSubject -> RETURN INVALID
-        //    // Binding check first: an otherwise valid proof for someone else
-        //    // is a replay attempt, not an expiry.
-        // IF NOT attestation.verify(publicKeyFor(issuerKeyFingerprint)) -> RETURN INVALID
-        // IF NOT attestation.isValid(now) -> RETURN EXPIRED
-        // IF issuer NOT IN policy.trustedRestrictionSources -> RETURN UNTRUSTED_ISSUER
-        // RETURN ACCEPTED
-        return null;
+        if (attestation == null) {
+            return Outcome.ABSENT;
+        }
+        // Binding check first: an otherwise valid proof for someone else is a
+        // replay attempt, not an expiry.
+        if (expectedSubject == null || !expectedSubject.equals(attestation.getSubjectKeyFingerprint())) {
+            return Outcome.INVALID;
+        }
+        byte[] key = issuerKeys.apply(attestation.getIssuerKeyFingerprint());
+        if (key == null) {
+            // Unknown key: cannot check, and not an accusation.
+            return Outcome.UNTRUSTED_ISSUER;
+        }
+        if (!attestation.verify(key)) {
+            return Outcome.INVALID;
+        }
+        if (!attestation.isValid(now)) {
+            return Outcome.EXPIRED;
+        }
+        if (!acceptedIssuers.contains(attestation.getIssuerKeyFingerprint())) {
+            return Outcome.UNTRUSTED_ISSUER;
+        }
+        return Outcome.ACCEPTED;
     }
 
     /**
@@ -63,64 +96,65 @@ public class AttestationVerifier {
      */
     public Restriction evaluate(AttestationWallet wallet, String membershipId,
                                 boolean refreshPlausible, Instant now) {
-        // PSEUDO-CODE
-        //
-        // 1. ACTIVE OUTCOMES FIRST
-        //    // A presented moderation outcome is the strongest signal and the
-        //    // one that actually targets "radicaliser moves hub".
-        //    outcome = wallet.present(ACTIVE_MODERATION_OUTCOME, trustedIssuers, now)
-        //    IF outcome present AND verify(...) == ACCEPTED
-        //       RETURN Restriction(
-        //          reason   = MODERATION_ACTION,
-        //          scope    = FEDERATED,
-        //          roleCap  = GUEST,
-        //          discharge = EXPIRY,          // lapses with the outcome
-        //          expiresAt = outcome.expiresAt,
-        //          appealable = true,
-        //          explanation = "Another hub you belong to has an active
-        //                         moderation decision about you.")
-        //
-        // 2. GOOD STANDING
-        //    IF NOT policy.requireGoodStanding -> RETURN null
-        //       // Most hubs should leave this off. Requiring proof is a
-        //       // meaningful cost to people with patchy connectivity.
-        //
-        //    proof = wallet.present(GOOD_STANDING, trustedIssuers, now)
-        //    result = verify(proof, user's fingerprint, now)
-        //
-        //    IF result == ACCEPTED -> RETURN null
-        //
-        //    IF result IN (EXPIRED, ABSENT) AND NOT refreshPlausible
-        //       RETURN null
-        //       // THE IMPORTANT CASE. During a blackout nobody can refresh, so
-        //       // treating absence as guilt would silence a whole hub exactly
-        //       // when it is most needed. Fail open here; the censor and
-        //       // moderation outcomes still apply.
-        //
-        //    IF result == INVALID
-        //       RETURN Restriction(reason = MODERATION_ACTION, roleCap = GUEST,
-        //                          discharge = MANUAL, appealable = true)
-        //       // Forged proof is a deliberate act; a human should look.
-        //
-        //    RETURN Restriction(
-        //       reason   = COMPROMISED_CENSOR,
-        //       scope    = FEDERATED,
-        //       roleCap  = GUEST,
-        //       discharge = LEAVE_ORIGIN_HUB,
-        //       appealable = true,
-        //       explanation = "A hub you belong to cannot currently vouch for
-        //                      you. This lifts when it is fixed, or if you
-        //                      leave that hub.")
-        //       // No originHubId is set: this hub does not know which hub
-        //       // failed, only that no valid proof exists. The discharge
-        //       // condition is satisfied by a fresh proof appearing.
-        return null;
+        String subject = wallet == null ? null : wallet.getOwnerKeyFingerprint();
+
+        // 1. ACTIVE OUTCOMES FIRST: the strongest signal, and the one that
+        //    actually targets "radicaliser moves hub".
+        java.util.Optional<Attestation> outcome = wallet == null ? java.util.Optional.empty()
+                : wallet.present(Attestation.Claim.ACTIVE_MODERATION_OUTCOME, acceptedIssuers, now);
+        if (outcome.isPresent() && verify(outcome.get(), subject, now) == Outcome.ACCEPTED) {
+            return new Restriction(membershipId, Restriction.Reason.MODERATION_ACTION, Restriction.Scope.FEDERATED,
+                    Role.GUEST)
+                    .appliedAt(now)
+                    .expiring(outcome.get().getExpiresAt())
+                    .explained("Another hub you belong to has an active moderation decision about you.");
+        }
+
+        // 2. GOOD STANDING. Most hubs should leave this off: requiring proof is
+        //    a meaningful cost to people with patchy connectivity.
+        if (policy == null || !policy.isRequireGoodStanding()) {
+            return null;
+        }
+        Attestation proof = wallet == null ? null
+                : wallet.present(Attestation.Claim.GOOD_STANDING, acceptedIssuers, now).orElse(null);
+        Outcome result = verify(proof, subject, now);
+        if (result == Outcome.ACCEPTED) {
+            return null;
+        }
+        if ((result == Outcome.EXPIRED || result == Outcome.ABSENT) && !refreshPlausible) {
+            // THE IMPORTANT CASE. During a blackout nobody can refresh, so
+            // treating absence as guilt would silence a whole hub exactly when
+            // it is most needed. Fail open; the censor and moderation outcomes
+            // still apply.
+            return null;
+        }
+        if (result == Outcome.INVALID) {
+            // Forged proof is a deliberate act; a human should look.
+            return new Restriction(membershipId, Restriction.Reason.MODERATION_ACTION, Restriction.Scope.THIS_HUB,
+                    Role.GUEST)
+                    .appliedAt(now)
+                    .explained("The proof of good standing you presented did not check out."
+                            + " A moderator will look at it.");
+        }
+        // No originHubId: this hub does not know which hub failed, only that no
+        // valid proof exists. Re-evaluating when a fresh proof appears lifts it.
+        return new Restriction(membershipId, Restriction.Reason.COMPROMISED_CENSOR, Restriction.Scope.FEDERATED,
+                Role.GUEST)
+                .appliedAt(now)
+                .dischargedBy(Restriction.Discharge.LEAVE_ORIGIN_HUB)
+                .explained("A hub you belong to cannot currently vouch for you. This lifts when it is fixed,"
+                        + " or if you leave that hub.");
     }
 
     /** Highest role this hub will grant given the proofs on offer. */
     public Role permittedRole(AttestationWallet wallet, Role requestedRole,
                               boolean refreshPlausible, Instant now) {
-        // TODO: pseudo-code
-        return null;
+        Restriction cap = evaluate(wallet, null, refreshPlausible, now);
+        Role role = requestedRole == null ? Role.MEMBER : requestedRole;
+        return cap == null ? role : role.cappedAt(cap.getRoleCap());
+    }
+
+    public java.util.List<String> getAcceptedIssuers() {
+        return java.util.List.copyOf(acceptedIssuers);
     }
 }

@@ -31,7 +31,18 @@ public class Match {
     private boolean fromFallback;
 
     public Match() {
-        // TODO: pseudo-code
+        this.matchedSkillIds = List.of();
+    }
+
+    public Match(Kind kind, String targetId, String displayName, float score, List<String> matchedSkillIds,
+                 String rationale, boolean fromFallback) {
+        this.kind = kind;
+        this.targetId = targetId;
+        this.displayName = displayName;
+        this.score = score;
+        this.matchedSkillIds = matchedSkillIds == null ? List.of() : List.copyOf(matchedSkillIds);
+        this.rationale = rationale;
+        this.fromFallback = fromFallback;
     }
 
     // --- accessors --------------------------------------------------------

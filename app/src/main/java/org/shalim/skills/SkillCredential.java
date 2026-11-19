@@ -56,21 +56,67 @@ public class SkillCredential {
      */
     private String linkTag;
 
+    /** Grace window for rings that have since rotated. */
+    public static final java.time.Duration RING_GRACE = java.time.Duration.ofDays(30);
+
     public SkillCredential() {
-        // TODO: pseudo-code
+    }
+
+    /** Built by a {@link SkillCredentialScheme}, or restored from the holder's device. */
+    public SkillCredential(String credentialId, String subjectKeyFingerprint, String taxonomyTerm,
+                           UserSkill.Proficiency proficiency, java.time.LocalDate issuedOn, String ringHash,
+                           byte[] ringSignature, String linkTag) {
+        this.credentialId = credentialId;
+        this.subjectKeyFingerprint = subjectKeyFingerprint;
+        this.taxonomyTerm = taxonomyTerm;
+        this.proficiency = proficiency;
+        this.issuedOn = issuedOn;
+        this.ringHash = ringHash;
+        this.ringSignature = ringSignature == null ? null : ringSignature.clone();
+        this.linkTag = linkTag;
+    }
+
+    /** What the ring signature signs. The scheme decides how. */
+    public byte[] signedPayload() {
+        return org.shalim.crypto.Canonical.of("shalim.skillcredential.v1").hex(subjectKeyFingerprint)
+                .string(taxonomyTerm).enumName(proficiency)
+                .u64(issuedOn == null ? Long.MIN_VALUE : issuedOn.toEpochDay()).hex(ringHash).encode();
+    }
+
+    /** Hash of a ring: SHA-256 over the sorted raw keys, so order never matters. */
+    public static String ringHashOf(List<byte[]> ringIssuerKeys) {
+        List<String> hexKeys = new java.util.ArrayList<>();
+        for (byte[] k : ringIssuerKeys) {
+            hexKeys.add(org.shalim.crypto.Bytes.hex(k));
+        }
+        return org.shalim.crypto.Canonical.of("shalim.ring.v1").strings(hexKeys).digestHex();
     }
 
     /**
      * Verifies against a ring the receiving hub rebuilds from the cards it
-     * holds. Rings rotate as hubs join and leave search, so verification also
-     * accepts any ring the hub has held within the credential's grace window.
+     * holds. Rings rotate as hubs join and leave search, so a credential is
+     * checked against the current ring and against recent rings the caller
+     * still holds within {@link #RING_GRACE}. With no scheme bound, nothing
+     * verifies.
      */
-    public boolean verify(List<byte[]> ringIssuerKeys, Instant now) {
-        // PSEUDO-CODE
-        // IF hash(ringIssuerKeys) != ringHash AND ring not in recent-ring cache
-        //    RETURN false
-        // RETURN lsagVerify(ringSignature, (subject, term, proficiency, issuedOn), ring)
+    public boolean verify(List<List<byte[]>> currentAndRecentRings, SkillCredentialScheme scheme, Instant now) {
+        if (scheme == null || ringSignature == null || ringHash == null) {
+            return false;
+        }
+        for (List<byte[]> ring : currentAndRecentRings) {
+            if (org.shalim.crypto.Bytes.equalHex(ringHash, ringHashOf(ring)) && scheme.verify(this, ring, now)) {
+                return true;
+            }
+        }
         return false;
+    }
+
+    public String getRingHash() {
+        return ringHash;
+    }
+
+    public byte[] getRingSignature() {
+        return ringSignature == null ? null : ringSignature.clone();
     }
 
     // --- accessors --------------------------------------------------------

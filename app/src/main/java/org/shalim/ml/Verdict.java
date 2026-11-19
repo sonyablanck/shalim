@@ -23,9 +23,17 @@ public class Verdict {
     /** Set when a human overturned the model. The human's decision wins. */
     private String overriddenByUserId;
     private String overrideJustification;
+    private CensorEngine.Decision overriddenDecision;
 
+    /**
+     * An unscreened placeholder. Its decision is REVIEW, never ALLOW: a
+     * verdict nobody produced must not clear anything.
+     */
     public Verdict() {
-        // TODO: pseudo-code
+        this.verdictId = org.shalim.crypto.Bytes.randomId();
+        this.decision = CensorEngine.Decision.REVIEW;
+        this.categories = List.of();
+        this.assessedAt = Instant.now();
     }
 
     /**
@@ -44,19 +52,42 @@ public class Verdict {
 
     /** Whether this verdict came from the artefact the hub currently pins. */
     public boolean isCurrent(ModelPin currentPin) {
-        // TODO: pseudo-code
-        return false;
+        return currentPin != null && modelPinHash != null && currentPin.getArtefactHash() != null
+                && org.shalim.crypto.Bytes.equalHex(modelPinHash, currentPin.getArtefactHash());
     }
 
     public boolean isOverridden() {
-        // TODO: pseudo-code
-        return false;
+        return overriddenDecision != null;
     }
 
     /** Decision after any human override is applied. */
     public CensorEngine.Decision effectiveDecision() {
-        // TODO: pseudo-code
-        return null;
+        return overriddenDecision != null ? overriddenDecision : decision;
+    }
+
+    /**
+     * A moderator's decision on a held or contested verdict. Verdicts are
+     * immutable, so this returns a copy with the same id and the override
+     * recorded; the model's own decision is kept beside it, for the log.
+     */
+    public Verdict overriddenBy(String moderatorUserId, CensorEngine.Decision decision, String justification) {
+        if (moderatorUserId == null || decision == null || justification == null || justification.isBlank()) {
+            throw new IllegalArgumentException("an override names its moderator, decision and reason");
+        }
+        Verdict v = new Verdict(this.decision, this.categories, this.confidence, this.modelPinHash, this.assessedAt);
+        v.verdictId = this.verdictId;
+        v.overriddenDecision = decision;
+        v.overriddenByUserId = moderatorUserId;
+        v.overrideJustification = justification;
+        return v;
+    }
+
+    public String getOverriddenByUserId() {
+        return overriddenByUserId;
+    }
+
+    public String getOverrideJustification() {
+        return overrideJustification;
     }
 
     // --- accessors --------------------------------------------------------

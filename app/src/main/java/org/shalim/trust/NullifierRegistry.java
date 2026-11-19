@@ -1,79 +1,105 @@
 package org.shalim.trust;
 
-import java.time.Instant;
 import java.time.LocalDate;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * The target hub's memory of which nullifiers and pseudonyms it has seen. The
  * whole of what the target knows about its inbound probers.
  *
- * <p>Holds, per inbound link: the link pseudonym, the prober pseudonym, the
- * auditing hub's key, and today's nullifier. No user id. A seized target
- * device shows that some members probe for some hubs, and not which.
+ * <p>Holds: today's nullifiers, and each prober pseudonym's auditing hub. No
+ * user id. A seized target device shows that some members probe for some
+ * hubs, and not which.
  */
 public class NullifierRegistry {
 
     public enum Outcome {
         /** First presentation this epoch. */
         FRESH,
-        /** Same nullifier, same challenge: a retransmission. Harmless. */
+        /** Same nullifier, same share: a retransmission. Harmless. */
         REPLAYED,
-        /** Same nullifier, different challenge: secret recovered, member traced. */
+        /** Same nullifier, different share: secret recoverable, member traceable. */
         DOUBLE_SPENT
     }
 
-    private String hubKeyFingerprint;
+    private final String hubKeyFingerprint;
     private LocalDate epoch;
-    private List<EpochNullifier> seenThisEpoch;
+    private final Map<String, EpochNullifier> seenThisEpoch = new HashMap<>();
 
     /** Prober pseudonym -> auditing hub key. At most one entry per pseudonym. */
-    private List<String[]> proberAssignments;
+    private final Map<String, String> proberAssignments = new HashMap<>();
 
-    public NullifierRegistry() {
-        // TODO: pseudo-code
+    /** Pseudonyms barred after a double spend. */
+    private final java.util.Set<String> barred = new java.util.HashSet<>();
+
+    public NullifierRegistry(String hubKeyFingerprint) {
+        this.hubKeyFingerprint = hubKeyFingerprint;
     }
 
-    public Outcome observe(EpochNullifier nullifier, Instant now) {
-        // PSEUDO-CODE
-        // IF nullifier.epoch != epoch -> roll over: clear seenThisEpoch
-        // prior = seenThisEpoch WHERE nullifier == nullifier.nullifier
-        // IF prior absent -> add; RETURN FRESH
-        // IF prior.shareX == nullifier.shareX -> RETURN REPLAYED
-        // RETURN DOUBLE_SPENT
-        return null;
+    public synchronized Outcome observe(EpochNullifier nullifier) {
+        if (!nullifier.getEpoch().equals(epoch)) {
+            epoch = nullifier.getEpoch();
+            seenThisEpoch.clear();
+        }
+        EpochNullifier prior = seenThisEpoch.get(nullifier.getNullifier());
+        if (prior == null) {
+            seenThisEpoch.put(nullifier.getNullifier(), nullifier);
+            return Outcome.FRESH;
+        }
+        return prior.sameShareAs(nullifier) ? Outcome.REPLAYED : Outcome.DOUBLE_SPENT;
+    }
+
+    /** The share first seen under this nullifier today, for {@link #trace}. */
+    public synchronized EpochNullifier firstSeen(String nullifier) {
+        return seenThisEpoch.get(nullifier);
     }
 
     /**
      * Traces a double-spent nullifier to a membership. The one path by which
-     * a prober's anonymity ends, and only reachable by their own client
-     * breaking the protocol. Logged, and the member's prober pseudonym is
-     * barred; their ordinary membership is untouched unless a moderator acts.
+     * a prober's anonymity ends, reachable only by their own client breaking
+     * the protocol. The caller logs it and bars the prober pseudonym; the
+     * member's ordinary membership is untouched unless a moderator acts.
      */
-    public String trace(EpochNullifier first, EpochNullifier second,
-                        MemberCredentialIssuer issuer, Instant now) {
-        // PSEUDO-CODE
-        // secret = EpochNullifier.recoverSecret(first, second)
-        // IF secret null -> RETURN null
-        // membershipId = issuer commitment table WHERE commitment == H(secret)
-        // log NULLIFIER_DOUBLE_SPENT (membershipId)
-        // RETURN membershipId
-        return null;
+    public synchronized String trace(EpochNullifier first, EpochNullifier second, MemberCredentialIssuer issuer) {
+        byte[] secret = EpochNullifier.recoverSecret(first, second);
+        if (secret == null) {
+            return null;
+        }
+        String membershipId = issuer.membershipForCommitment(EpochNullifier.commitment(secret));
+        org.shalim.crypto.Bytes.wipe(secret);
+        return membershipId;
     }
 
     /** Whether this member already carries a link for a different auditing hub. */
-    public boolean proberAlreadyAssigned(String proberPseudonym, String auditingHubKeyFingerprint) {
-        // TODO: pseudo-code
-        return false;
+    public synchronized boolean proberAlreadyAssigned(String proberPseudonym, String auditingHubKeyFingerprint) {
+        String assigned = proberAssignments.get(proberPseudonym);
+        return assigned != null && !assigned.equals(auditingHubKeyFingerprint);
     }
 
-    public void assign(String proberPseudonym, String auditingHubKeyFingerprint) {
-        // TODO: pseudo-code
+    public synchronized void assign(String proberPseudonym, String auditingHubKeyFingerprint) {
+        proberAssignments.putIfAbsent(proberPseudonym, auditingHubKeyFingerprint);
+    }
+
+    /** Frees a pseudonym when its link ends, so the member may carry another. */
+    public synchronized void release(String proberPseudonym, String auditingHubKeyFingerprint) {
+        proberAssignments.remove(proberPseudonym, auditingHubKeyFingerprint);
+    }
+
+    public synchronized void bar(String proberPseudonym) {
+        barred.add(proberPseudonym);
+    }
+
+    public synchronized boolean isBarred(String proberPseudonym) {
+        return barred.contains(proberPseudonym);
     }
 
     /** Duress path. */
-    public void wipe() {
-        // TODO: pseudo-code
+    public synchronized void wipe() {
+        seenThisEpoch.clear();
+        proberAssignments.clear();
+        barred.clear();
+        epoch = null;
     }
 
     public String getHubKeyFingerprint() {

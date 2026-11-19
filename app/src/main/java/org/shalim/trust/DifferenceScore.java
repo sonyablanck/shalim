@@ -60,23 +60,32 @@ public class DifferenceScore {
     private boolean scoreable;
 
     public DifferenceScore() {
-        // TODO: pseudo-code
+        this.wordingDivergence = Float.NaN;
     }
 
     public static DifferenceScore unscoreable(String probeId, String peerKeyFingerprint) {
-        // TODO: pseudo-code
-        return null;
+        DifferenceScore d = new DifferenceScore();
+        d.probeId = probeId;
+        d.peerKeyFingerprint = peerKeyFingerprint;
+        d.scoreable = false;
+        return d;
     }
 
     /** Which side the evidence in this one probe points at. */
     public AuditAnomaly.Attribution attribution() {
-        // PSEUDO-CODE
-        // IF NOT scoreable OR intent == NEAR_MISS -> UNDETERMINED
-        // IF NOT peerMet AND localMet  -> PEER
-        // IF peerMet AND NOT localMet  -> LOCAL
-        // IF NOT peerMet AND NOT localMet -> BOTH
-        // RETURN UNDETERMINED
-        return null;
+        if (!scoreable || intent == TrustProbe.Intent.NEAR_MISS) {
+            return AuditAnomaly.Attribution.UNDETERMINED;
+        }
+        if (!peerMetExpectation && localMetExpectation) {
+            return AuditAnomaly.Attribution.PEER;
+        }
+        if (peerMetExpectation && !localMetExpectation) {
+            return AuditAnomaly.Attribution.LOCAL;
+        }
+        if (!peerMetExpectation) {
+            return AuditAnomaly.Attribution.BOTH;
+        }
+        return AuditAnomaly.Attribution.UNDETERMINED;
     }
 
     /**
@@ -85,17 +94,40 @@ public class DifferenceScore {
      * one. Under-blocking by peers is found by replay instead.
      */
     public boolean isPeerUnderBlock() {
-        // PSEUDO-CODE
-        // RETURN scoreable AND intent == SUPPLY_SIGNAL AND NOT peerMet AND localMet
-        return false;
+        return scoreable && intent == TrustProbe.Intent.SUPPLY_SIGNAL && !peerMetExpectation
+                && localMetExpectation;
     }
 
     /** Over-blocking by the peer on this probe: a PASS probe the peer blocked. */
     public boolean isPeerOverBlock() {
-        // PSEUDO-CODE
-        // RETURN scoreable AND intent IN (BENIGN, PROTECTED_SPEECH)
-        //        AND NOT peerMet AND localMet
-        return false;
+        return scoreable && (intent == TrustProbe.Intent.BENIGN || intent == TrustProbe.Intent.PROTECTED_SPEECH)
+                && !peerMetExpectation && localMetExpectation;
+    }
+
+    /** Built by {@link ProbeScoring}. */
+    static DifferenceScore of(Source source, String probeId, String peerKeyFingerprint, TrustProbe.Intent intent,
+                              boolean decisionDiffers, float categoryDivergence, float confidenceDivergence,
+                              float wordingDivergence, boolean peerMet, boolean localMet) {
+        DifferenceScore d = new DifferenceScore();
+        d.source = source;
+        d.probeId = probeId;
+        d.peerKeyFingerprint = peerKeyFingerprint;
+        d.intent = intent;
+        d.decisionDiffers = decisionDiffers;
+        d.categoryDivergence = categoryDivergence;
+        d.confidenceDivergence = confidenceDivergence;
+        d.wordingDivergence = wordingDivergence;
+        d.peerMetExpectation = peerMet;
+        d.localMetExpectation = localMet;
+        d.scoreable = true;
+        float sum = (decisionDiffers ? 0.5f : 0f) + 0.2f * categoryDivergence + 0.2f * confidenceDivergence
+                + (Float.isNaN(wordingDivergence) ? 0f : 0.1f * wordingDivergence);
+        d.magnitude = Math.min(1f, sum);
+        return d;
+    }
+
+    void setRunId(String runId) {
+        this.runId = runId;
     }
 
     // --- accessors --------------------------------------------------------

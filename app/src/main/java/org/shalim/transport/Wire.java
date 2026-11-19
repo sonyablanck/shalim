@@ -46,6 +46,15 @@ public final class Wire {
             return this;
         }
 
+        public Writer u16(int v) {
+            if (v < 0 || v > 0xffff) {
+                throw new IllegalArgumentException("u16 out of range");
+            }
+            out.write(v >>> 8);
+            out.write(v & 0xff);
+            return this;
+        }
+
         public Writer u32(long v) {
             for (int s = 24; s >= 0; s -= 8) {
                 out.write((int) (v >>> s) & 0xff);
@@ -143,6 +152,13 @@ public final class Wire {
         public int u8() {
             need(1);
             return in[pos++] & 0xff;
+        }
+
+        public int u16() {
+            need(2);
+            int v = ((in[pos] & 0xff) << 8) | (in[pos + 1] & 0xff);
+            pos += 2;
+            return v;
         }
 
         public long u32() {

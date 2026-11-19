@@ -39,34 +39,72 @@ public class AuthBond {
     private byte[] signatureB;
 
     public AuthBond() {
-        // TODO: pseudo-code
+        this.bondId = org.shalim.crypto.Bytes.randomId();
     }
 
     /**
      * Forms or renews a bond when both directions count. Requires a live
      * exchange between the two hubs, over the admins' memberships.
      */
+    /** Short: re-signed daily while both links count, and lapses silently when either stops. */
+    public static final java.time.Duration TTL = java.time.Duration.ofDays(3);
+
     public static AuthBond formIfMutual(AuthLink aToB, AuthLink bToA, Instant now) {
-        // PSEUDO-CODE
-        // IF aToB == null OR bToA == null -> RETURN null
-        // IF NOT aToB.counts(now) OR NOT bToA.counts(now) -> RETURN null
-        // bond = new AuthBond(A, B, expiresAt = now + bondTtl)
-        // each side signs; RETURN bond
-        // On first formation, each side also witnesses the other's network
-        // claim: signs (claimId, claimedAt), never the BSSIDs. This is the
-        // evidence of age NetworkClaim.older reads in a dispute.
-        return null;
+        if (aToB == null || bToA == null || !aToB.counts(now) || !bToA.counts(now)
+                || !aToB.getAuthenticatorKeyFingerprint().equals(bToA.getSubjectKeyFingerprint())
+                || !aToB.getSubjectKeyFingerprint().equals(bToA.getAuthenticatorKeyFingerprint())) {
+            return null;
+        }
+        AuthBond b = new AuthBond();
+        // Ordered, so both sides build the same record.
+        boolean aFirst = aToB.getAuthenticatorKeyFingerprint().compareTo(aToB.getSubjectKeyFingerprint()) < 0;
+        b.keyFingerprintA = aFirst ? aToB.getAuthenticatorKeyFingerprint() : aToB.getSubjectKeyFingerprint();
+        b.keyFingerprintB = aFirst ? aToB.getSubjectKeyFingerprint() : aToB.getAuthenticatorKeyFingerprint();
+        b.formedAt = now;
+        b.expiresAt = now.plus(TTL);
+        // Each side then signs with signAs over a live exchange; witnessing
+        // each other's network claim on first formation comes with bond
+        // exchange in stage 5.
+        return b;
     }
 
     public boolean isCurrent(Instant now) {
-        // TODO: pseudo-code
-        return false;
+        return expiresAt != null && now.isBefore(expiresAt) && signatureA != null && signatureB != null;
     }
 
     /** The anonymised form published on the card. Built by the subject hub. */
     public BondProof toProof(java.util.List<byte[]> ringOfListedIssuerKeys, byte[] ownPrivateKey) {
-        // TODO: pseudo-code
+        // Stage 5: a linkable ring signature over the listed issuer keys.
         return null;
+    }
+
+    byte[] payload() {
+        return org.shalim.crypto.Canonical.of("shalim.bond.v1").hex(keyFingerprintA).hex(keyFingerprintB)
+                .instant(expiresAt).encode();
+    }
+
+    /** One side's co-signature. Returns false if the signer is neither party. */
+    public boolean signAs(org.shalim.crypto.Signer key) {
+        String fp = key.fingerprint();
+        if (fp.equals(keyFingerprintA)) {
+            signatureA = key.sign(payload());
+            return true;
+        }
+        if (fp.equals(keyFingerprintB)) {
+            signatureB = key.sign(payload());
+            return true;
+        }
+        return false;
+    }
+
+    public boolean verify(byte[] publicKeyA, byte[] publicKeyB) {
+        return signatureA != null && signatureB != null
+                && org.shalim.crypto.Ed25519.verify(publicKeyA, payload(), signatureA)
+                && org.shalim.crypto.Ed25519.verify(publicKeyB, payload(), signatureB);
+    }
+
+    public String otherParty(String ownKeyFingerprint) {
+        return ownKeyFingerprint.equals(keyFingerprintA) ? keyFingerprintB : keyFingerprintA;
     }
 
     // --- accessors --------------------------------------------------------

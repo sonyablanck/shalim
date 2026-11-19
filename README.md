@@ -11,19 +11,31 @@ working during a blackout.
 
 ---
 
-## ⚠️ Status: primitives and transport built, everything else skeleton
+## ⚠️ Status: hub core and inter-hub checks built on stub models; discovery and real models still skeleton
 
-**Stages 1 and 2 of 7 are done.** Crypto and identity primitives, and the
-transport and network-claim layer, are real code with tests. Everything above
-them is still empty method bodies or pseudo-code in comments. Two hub instances
-can now find each other on a LAN, authenticate, and sync their logs. The app
-itself does nothing yet. See *Build order*, *Crypto and identity primitives*
-and *Transport and network claims* below.
+**Stages 1–4 of 7 are done:**
+- crypto and identity primitives;
+- transport and network claims;
+- the hub core: creation, roster, roles and restrictions, policy, the query
+  pipeline, meeting requests, earning skills, attestations, retention, and
+  encrypted persistence;
+- inter-hub authentication: link setup, replay, organic and synthetic probes,
+  `WebOfTrust`, revocation and appeal, and provisional status.
+
+All of this is real code with tests. A hub can be created, run, searched,
+saved and reloaded, and one hub can check another and revoke it. It all runs
+on fixed-output *stub* models, though, and discovery and the real models are
+still pseudo-code. The anonymous prober credential is a seam with no
+implementation, so **no link can be set up outside the tests** until a
+scheme is chosen (question 18). See *Build order* and the stage sections
+below.
 
 - No models are bundled or integrated. `TinyCensor`, `QwenMatchmaker` and
   `TinyProber` are interface implementations with no inference behind them.
-- No Android project, no Gradle build, no UI, no persistence. Keys and logs
-  live in memory only.
+  The hub core runs on `FixedCensor` and `KeywordMatchmaker` (`ml.stub`).
+  These are deliberately not safety controls.
+- No Android project, no Gradle build, no UI. Persistence is an encrypted file
+  store for desktop hub instances; the Android store is still to come.
 - One real transport: IP on a local network (`LanTransport`). Bluetooth
   mesh, LoRa and cellular are specified by capability and simulated in
   memory with their real limits, including LoRa duty cycle. Their radios
@@ -137,7 +149,7 @@ flowchart LR
     S -- via the prober membership --> Q
 ```
 
-1. **Replay (every link, every day).** B signs a head for each day's tree.
+1. **Replay (every link; 30 real leaves a fortnight).** B signs a head for each day's tree.
    A reveals that day's value from a nonce chain it committed to at link
    setup, B checks it against the chain's anchor, both derive sample indices
    from `PRF(nonce, head)`, and B opens those leaves — plaintext encrypted to
@@ -193,9 +205,8 @@ flowchart LR
   never displayed or stored, and the sample is fixed by the root and a
   pre-committed nonce so A cannot aim it at one person — but in a small hub a
   question can identify its author on its own content.
-- **Meeting requests are not replayed** by default (`HubPolicy.replayMeetingRequests`).
-  They are private messages between two members. Their screening is checked
-  only through receipts.
+- **Meeting requests are replayed** at every hub (decided 19 November 2026;
+  question 16). A hub that withholds them fails replay, whatever its posture.
 - **Determinism is an engineering commitment.** Replay requires every hub to
   screen on the reference CPU backend with fixed threading. Leaves within
   ±0.005 of a threshold are excluded from findings.
@@ -212,11 +223,12 @@ stay deterministic stubs until the protocol logic around them is proven.
 2. **Transport and network claims: device-to-hub messaging, claim queries,
    the creation listen, members' pinned claims, sync.** ✅ Done 29 October
    2026.
-3. Hub core without AI: creation, roster, roles and restrictions, policy
+3. **Hub core without AI: creation, roster, roles and restrictions, policy
    defaults, retention, persistence. Fixed-output stubs stand in for the three
-   models.
-4. Inter-hub authentication against those stubs: link setup, replay, organic
-   and synthetic streams, `WebOfTrust`, revocation.
+   models.** ✅ Done 18 November 2026.
+4. **Inter-hub authentication against those stubs: link setup, replay,
+   organic and synthetic streams, `WebOfTrust`, revocation.** ✅ Done 19
+   November 2026.
 5. Hub search, bonds and dispute handling.
 6. Real models, in this order: TinyCensor (the safety gate), then
    QwenMatchmaker, then the prober. The prober's difference scores can only be
@@ -399,6 +411,204 @@ the user id is derived from the key and so has to come after it.
 - **Card format.** `gossip()` carries opaque bytes until stage 5 defines
   signed cards.
 
+## Hub core (18 November 2026, stage 3)
+
+### What is now real code
+
+| Where | What |
+| --- | --- |
+| `identity` | `Role` permission sets (each role includes the one below); `Membership` with restriction caps, the hub-standing cap and plain-language denials; `Restriction` with scope, discharge and accountable lifting; `AgeAssurance` with expiry and strength ordering; `User` join, leave and permission checks; guest upgrade carrying memberships, wallet and skills |
+| `hub.HubPolicy` | Posture defaults; validation that flags inconsistency and loosening; the disclosure members see before joining; setters, applied only through `HubAdministration.changePolicy` |
+| `hub.HubStanding`, `CensorIntegrity` | The standing derivation, failing open after unlock; local and peer integrity checks; failure modes that never mean "carry on unscreened" |
+| `hub.HubLocation` | Redaction at source, with coordinates rounded once and never jittered; an opening-hours grammar; first-meeting suitability; distance |
+| `hub.HubAdministration` (new) | Hub creation; admitting members and walk-in guests; roles, restrictions, removal and leaving; roster and log views, which are themselves logged; resources; earning skills; moderation outcomes and appeals; integrity; standing; retention; panic wipe. Each action checks permission under the hub's standing and is logged |
+| `hub.QueryService` | All nine gates for real: rate limits, failure modes, a censor-log leaf and receipt for every screened question, roster filtering of matches whatever the engine returned, and screening of generated prose |
+| `query` | `HubQuery`, `QueryResult` (refused, held or answered, always with a reason); `MeetingRequest` with contact-detail filtering and a compact frame; `Meeting` booked only at the hub in opening hours; `MeetingBook` (new); `MeetingService` (new) with provenance, once-per-pair, held-request review, silent decline and reporting that blocks the pair |
+| `skills` | The whole `SkillsLayer`: screened resources, hub-skill derivation with stable ids, interactions, verification, credential import with de-duplication, keyword and vector search, rescreening, retention. A credential-scheme seam (`SkillCredentialScheme`) with no implementation in the main tree |
+| `attestation` | Wallet (presents one proof, never the set); issuer (withholds good standing from a flagged hub); verifier (fails open in a blackout); moderation outcomes that cite evidence, expire within a year and are appealed to someone else |
+| `ml.stub` (new) | `FixedCensor` and `KeywordMatchmaker`: deterministic stand-ins so everything above can be tested before real models exist |
+| `store` (new) | `EncryptedStore`: named records sealed under a wrapped data key, atomic writes, crypto-shredding. `StoreKey`: PBKDF2-SHA256 at 600,000 iterations. `HubSnapshot`: a whole hub to bytes and back, byte-for-byte, refusing any snapshot whose log does not verify |
+
+### Design changes made along the way
+
+1. **Members can no longer list the roster.** `VIEW_MEMBERS` had sat with
+   members. It now belongs to moderators: a member who could list the roster
+   would hold the directory that "no cold contact" exists to deny them.
+   Members find people only through query results.
+2. **Hub creation became a service.** A constructor cannot screen
+   resources, check the claim signature or write the log. So
+   `HubAdministration.create` does all of that, refuses incomplete hubs with
+   every reason at once, and the seven-argument `Hub` constructor is gone.
+3. **An unscreened verdict is REVIEW, never ALLOW.** A `Verdict` nobody
+   produced must not clear anything. Without a verified censor, questions and
+   meeting requests are held, not passed.
+4. **Opening hours have a grammar.** They were free text, which could not
+   enforce "meetings cannot be scheduled outside these". Hours now read like
+   `Mon-Fri 09:00-17:00; Sat 22:00-02:00; Sun closed` in a named time zone.
+   Hours that do not parse host no meetings until an admin fixes them.
+5. **Location rounding is stored, not applied per request.** Narrowing
+   precision discards the finer value on the device. Widening it cannot bring
+   the value back.
+6. **HIGH_RISK hubs take no walk-in guests by default.** Under surveillance,
+   a stranger on the Wi-Fi is as likely to be looking for the hub as looking
+   for help.
+7. **Policy is validated, not locked.** "Tighten, not loosen" became
+   `validate()` reporting every setting looser than its posture's floor. Admins
+   see the list, and the change is logged.
+8. **Restriction discharge is device-side.** A cap that lifts when you leave
+   another hub is evaluated against your own device's hub list. A hub's copy
+   of your membership knows only that hub, so no hub learns where else you
+   belong.
+9. **Earning skills fails closed without a ring-signature scheme.**
+   `SkillCredentialScheme` has no implementation in the main tree. The tests
+   use one that signs in the open, which is exactly what must never ship. Until
+   a real scheme is chosen (question 18), no hub can issue or accept a
+   portable credential.
+10. **A meeting request fits LoRa only in Latin script.** 150 characters of
+    Latin script fit one SF7 frame once the compact frame and the delivery
+    header were tightened (the delivery length is now 2 bytes, not 4). Scripts
+    that take more bytes a character go over Bluetooth or Wi-Fi.
+11. **A replica running a different censor now restricts.** A sync-time pin
+    mismatch (`PEER_DIVERGENCE`) is treated like local tampering until someone
+    looks, because nobody yet knows which side changed.
+12. **Moderation outcomes need evidence and an end.** An outcome must cite
+    log entries and expire within a year. An appeal goes to a different
+    moderator from the one who decided.
+13. **Retention closes the censor log's days.** Pruning runs on closed days,
+    so the daily retention pass closes yesterday first. Quiet days still get
+    heads.
+
+### Signature changes
+
+- `Hub(…, initialResources)` is removed; use `HubAdministration.create`.
+- `User.leave(hubId, issuerKeyFingerprint)` (the one-argument form remains).
+- `AttestationIssuer(hub, issuerKey)`
+- `AttestationIssuer.issueAdult(subject, assuranceSeen, now)`
+- `AttestationVerifier(hubId, policy, acceptedIssuers, keyLookup)`
+- `SkillsLayer.verifyInteraction(…, scheme, ring, issuerKey, now)` returns one
+  credential per taxonomy term.
+- `SkillsLayer.importPresented(…, rings, scheme, matchmaker, now, earnedHere)`
+- `searchByKeyword` and `searchByVector` return typed `SearchHit`s and take a
+  matchability filter.
+- `SkillCredential.verify(rings, scheme, now)`
+- `QueryResult.refused/held/answered`
+- `HubRuntime.withKeys/withClock/withCredentials/withBlocklist/forHub`,
+  `commitScreening` and `log`
+- `MeetingRequest.toCompactFrame` has a new layout, with `fromCompactFrame`
+  and `fitsLoRa`.
+
+### Deliberately not yet
+
+- **Real models** (stage 6). `FixedCensor` ships with an empty table on
+  purpose: a phrase list here would be read as a blocklist, and a bad one.
+- **Device-side persistence.** Wallet, skill profile and claim pins need it,
+  and so does the Android keystore wrapping of the store key (stage 7). The
+  device slot can be restored (`DeviceBinding.restoreSlot`), but nothing
+  stores it yet.
+- **Releasing held questions.** A held query tells the asker so, and its
+  leaf is committed, but there is no moderator queue for queries yet, only for
+  meeting requests.
+- **Links, bonds, audit schedules and WebOfTrust** (stage 4, now done), and
+  **discovery** (stage 5). Standing is set through
+  `HubAdministration.updateStanding` until stage 4 computes it.
+- **Recovery shares and device attestation**, as before (questions 21 and
+  stage 7).
+
+## Inter-hub authentication (19 November 2026, stage 4)
+
+Built against the stub models, as the build order requires. The model
+interfaces (`CensorEngine`, `MatchmakerEngine`, `ProbeEngine`) are unchanged;
+real models implement them in stage 6 and nothing here needs to change.
+
+### What is now real code
+
+| Where | What |
+| --- | --- |
+| `trust.AuthLink`, `LinkStatement` (new) | Link lifecycle (PENDING, ACTIVE, SUSPENDED, REVOKED, DORMANT, INELIGIBLE); nonce chain; replay budget bookkeeping. Short-lived statements, signed by the authenticating hub, tell the target where its inbound link stands |
+| `trust.WebOfTrust` | The only place a link changes state. Rolling window equal to retention; conclusive evidence; power gates; one-sided binomial test for over-blocking at p < 0.01; organic corroboration that can suspend but never revoke; suspension that must run its course and see fresh evidence on a later day; dormancy; revocation that removes one link and pins its evidence; appeals; standing (inbound only) |
+| `trust.ReplayAuditor` | Heads with equivocation and chain checks; replay of opened leaves through the local pinned censor, with proof, commitment, pad and action checks and the near-threshold exclusion; member receipts checked against the head this hub was shown |
+| `trust.AuditResponder`, `LinkPeer` (new) | The target side: PSI-CA, link requests, approval by the target's admins, daily re-presentation, double-spend tracing, heads, and openings only for a committed nonce, at indices it derives itself, within a daily cap |
+| `trust.PeerAuditor` | Link setup with the consent text; the daily run (re-present, replay, statement); weekly batches for HIGH_RISK; organic probes; Poisson-scheduled synthetic probes inside the prober's active hours; analysis; manual disclosure; standing; retention; wipe |
+| `trust.AuditSchedule` | Posture defaults; mode selection; the 30-real-leaves-a-fortnight budget; synthetic rate and timing |
+| `trust.AuditRun`, `AuditAnomaly`, `ProbeOutcome`, `DifferenceScore`, `TrustProbe`, `OrganicProbe`, `ProbeLedger`, `ProbeCorpus`, `ProbeScoring` (new) | Verdicts with validity and power gates and attribution before conclusion; scoring shared by every prober model; a ledger that holds no text and keeps appealed evidence past retention; a pinned, stratified corpus whose synthetic draws are never supply requests |
+| `trust.EpochNullifier`, `AdminOverlapCheck`, `NullifierRegistry`, `ProberEligibility`, `MemberCredential`, `MemberCredentialIssuer`, `EligibilityProof`, `ProberCredentials` (new) | RLN nullifier arithmetic in the BLS12-381 scalar field; DH PSI-CA in the RFC 3526 2048-bit group; pseudonyms; daily issuance to ordinary members only; anonymity-set size; every eligibility rule |
+| `trust.MemberCredentialScheme` (new) | The seam for BBS. No implementation in the main tree (question 18) |
+| `trust.AuthBond`, `ReciprocityInvite` | Bond formation when both directions count, co-signing, silent expiry; reciprocity invites that lapse |
+| `hub.HubStanding`, `ProvisionalStatus` (new) | PROVISIONAL: 90-day cap, 30-day peer clock within 20 miles, 30 days after losing every inbound link to revocation, and device-side enforcement |
+| `ml.stub.SeedProber` (new) | A prober stand-in that sends seeds unparaphrased. Not for deployment |
+
+### Design changes made along the way
+
+1. **The replay budget counts real leaves.** Heads are padded, so a sampled
+   index may land on padding, which says nothing about the censor. The daily
+   draw is scaled by the share of real leaves seen so far, to reach 30 real
+   leaves a fortnight, and capped at 16 a day. The target enforces the cap
+   too, so a quiet hub is never read wholesale.
+2. **The window minimum fell from 40 leaves to 20.** Forty could never be
+   reached under 30 a fortnight. Small hubs need 6.
+3. **The target learns its link state from signed statements.** Inbound-only
+   unlock needs the target to know its inbound link counts, so the auditor
+   sends a statement each day, valid for three days. Silence lets it expire,
+   which stops the link counting but is not a revocation, so a blackout fails
+   open. Revocation sends the state REVOKED and nothing else. The pseudo-code
+   said not to message the peer at all; but then question 1's decision (a hub
+   whose sole inbound link is revoked becomes provisional) could not work.
+   Findings are still disclosed only by hand.
+4. **Withheld meeting requests fail replay.** A meeting-request leaf opened
+   without its text is withheld like any other (question 16).
+5. **A withheld opening is asked for twice** before it counts. Stage 4 asks
+   again at once; in deployment the retry should wait for the next sync.
+6. **PSI-CA and the nullifier are real code.** Both run on the JDK alone, so
+   they are no longer behind a seam. Only the BBS credential is.
+7. **"Joined too recently" is worked out on the prober's device.** The
+   target then never has to distinguish anything about an anonymous member.
+8. **Device attestation is a seam that fails closed.** Until stage 7 nobody
+   is attested, so nobody can carry a link.
+9. **Joining dates follow the hub's clock**, not the JVM's. They decide who
+   may probe, so they have to follow trusted time.
+10. **The nonce chain starts the day before setup**, so the setup day's
+    screenings are replayed too.
+11. **"A certified hub already near at creation"** is read as one seen
+    within the first day, since cards arrive by gossip.
+12. **The snapshot format is now version 2**, to carry the provisional
+    deadline. Version 1 snapshots are refused.
+
+### Signature changes
+
+- `PeerAuditor(runtime, corpus, schedule, prober, encryptionKeys, issuer)`;
+  `setUpAuthentication(peer, adminUserId, device, consented, now)`;
+  `runDaily(day, now, peers, device)`; `acceptOrganic(probe, proof, now)`;
+  `sendSynthetic(link, day, seed, channel, now)`; `disclose` returns a
+  `Disclosure`. `authenticablePeers` and `acceptInboundProber` are gone; the
+  target side is `AuditResponder`.
+- `ReplayAuditor(owner, censor, ledger, encryptionKeys)`;
+  `checkReceipt(peer, peerPublicKey, receipt, proof, now)`.
+- `WebOfTrust.setUp(peer, peerPublicKey, adminUserId, linkPseudonym, mode, eligibility, now)`.
+- `ProberEligibility.checkOutbound(prober, hub)` and
+  `checkInbound(proof, hub, issuerKey, issuerFingerprint, overlap, registry, issuer, schedule, today)`.
+- `AdminOverlapCheck` takes admin key fingerprints.
+- `ProbeLedger.recordReplay(…, runId, now)`, `recordOrganic(score, now)`.
+- `ReciprocityInvite(from, to, admin, membershipInvitationId, now)`.
+- `HubStanding.compute(…, provisional, now)`; `restore(…, provisionalUntil)`.
+- `HubRuntime.openForAuditor(day, indices, auditorEncryptionKey)`.
+- `AuditSchedule.replaySampleSize` became `replayLeavesPerFortnight`.
+
+### Deliberately not yet
+
+- **The anonymous credential** (question 18). Without it no link can be set
+  up outside the tests, so no hub can be certified, and every hub's
+  provisional period runs out. This is the next decision that blocks real use.
+- **Device attestation** (stage 7). Also fails closed.
+- **Audit traffic over sync.** `LinkPeer` calls are in-process. Binding them
+  to `SyncService` sessions comes with bond exchange in stage 5.
+- **Persisting trust state.** Links, nonce seeds, the ledger, heads and the
+  hub's encryption key live in memory, so a restart loses every link. This
+  has to land before anything is deployed, with stage 5's snapshot work.
+- **Bond exchange, `BondProof` and search** (stage 5).
+- **Re-running the admin-overlap check** daily. It runs at setup only.
+- **Question 23's clock tolerances** on replay days.
+- **Real paraphrase and scoring** (stage 6).
+
 ## Current architecture boundary
 
 The core structural refactor is now: `Hub` is plain state, and runtime machinery lives elsewhere.
@@ -525,13 +735,14 @@ This is the important safety property: the query path is a pipeline, not a loose
 | Package | What lives there |
 | --- | --- |
 | `org.shalim.crypto` | Hashing and canonical encoding, Ed25519, X25519, HKDF/HMAC, AEAD, sealed boxes, Merkle trees, nonce chains, Shamir, the keystore seam. Real code |
-| `org.shalim.hub` | Plain state (`Hub`), runtime container (`HubRuntime`), `Roster`, `QueryService`, `HubStanding`, append-only `HubLog`, the committed `CensorDecisionLog`, policy and premises |
-| `org.shalim.identity` | `User` and per-hub `Membership`, with `Role`, `Permission`, `Restriction`, `AgeAssurance` |
-| `org.shalim.skills` | Resources and the hub skills derived from them; earned `UserSkill`s, their `SkillCredential`s and the user-held `SkillProfile`; the private member skill index |
-| `org.shalim.ml` | `CensorEngine`, `MatchmakerEngine` and `ProbeEngine` interfaces, their implementations, and model pinning |
-| `org.shalim.query` | Asking, answering, meeting requests, meetings, and query-gate primitives |
+| `org.shalim.hub` | Plain state (`Hub`), runtime container (`HubRuntime`), `Roster`, `QueryService`, `HubAdministration`, `HubStanding`, append-only `HubLog`, the committed `CensorDecisionLog`, policy and premises. Real code |
+| `org.shalim.identity` | `User` and per-hub `Membership`, with `Role`, `Permission`, `Restriction`, `AgeAssurance`. Real code apart from recovery shares and device attestation |
+| `org.shalim.skills` | Resources and the hub skills derived from them; earned `UserSkill`s, their `SkillCredential`s and the user-held `SkillProfile`; the private member skill index. Real code, with the ring-signature scheme behind a seam |
+| `org.shalim.ml` | `CensorEngine`, `MatchmakerEngine` and `ProbeEngine` interfaces, their implementations (still pseudo-code), model pinning, and the deterministic stand-ins in `ml.stub` |
+| `org.shalim.query` | Asking, answering, meeting requests, meetings (`MeetingService`, `MeetingBook`), and query-gate primitives. Real code |
 | `org.shalim.transport` | Secure channel, wire format, transport profiles and LoRa airtime, the LAN and in-memory transports, beacons, claim queries, replica sync. Real code |
-| `org.shalim.attestation` | Portable proofs of good standing and person-level moderation outcomes |
+| `org.shalim.attestation` | Portable proofs of good standing and person-level moderation outcomes. Real code |
+| `org.shalim.store` | Encrypted, crypto-shreddable record store; passphrase key derivation; whole-hub snapshots. Real code |
 | `org.shalim.trust` | Authentication of other hubs — replay (`ReplayAuditor`), organic and synthetic probes, anonymous prober credentials (`MemberCredential`, `EpochNullifier`, `AdminOverlapCheck`), difference scores, the probe ledger, links and bonds |
 | `org.shalim.discovery` | The landing page: authenticated hubs near you, and the hub skills each offers |
 
@@ -810,7 +1021,7 @@ cards, which is why cards are pruned and panic-wiped.
 Updated 30 September for the prober changes: question 2 is largely addressed,
 4, 7 and 11 have moved, and 15–20 are new. Questions 21–23 were added on 29
 October when the primitives were built, and 24–27 the same day with the
-transport layer.
+transport layer. Questions 28–30 came with the hub core on 18 November.
 
 The September revision (daily probing, guest-only new hubs, bond-gated search,
 resource-derived skills) changed several rules the earlier design had called
@@ -825,6 +1036,18 @@ do not fit cleanly. Each is marked in the code where it bites.
    corpus, suspension before revocation, one link per revocation, appeal while
    evidence is retained. Not mitigated: a hub with only one or two bonds is
    exposed to any one of its peers.
+   **Decided 18 November 2026:**
+   - Revocation stays as specified. The trigger is attributed divergence
+     against the pinned corpus, not raw difference magnitude. Synthetic probes
+     can only suspend a link; replay is the conclusive evidence; and a
+     suspension must run its full period before it becomes a revocation.
+   - A hub whose *only* inbound link is revoked becomes **provisional** (see
+     question 6) rather than guest-only. Members keep querying under "not yet
+     checked", and the 30-day clock starts. An inbound link from any other
+     certified hub ends it; otherwise the hub falls to guest-only.
+   - So no single peer can silence a hub, while a genuinely broken hub still
+     loses access within a month. Hubs with two or more inbound links are
+     unaffected.
 2. **Probes are no longer hidden — largely addressed.** The peer used to
    know the prober's key, and `PeerAuditor.isInboundProber` existed so it would
    not restrict an admin who asked to buy drugs daily; that hook was all a
@@ -854,10 +1077,34 @@ do not fit cleanly. Each is marked in the code where it bites.
    peer's censor, not this hub's; a hub with a tampered censor can unlock itself
    by auditing someone honest. `HubPolicy.UnlockBasis` offers `ANY_DIRECTION`
    (as specified) and `INBOUND_REQUIRED` (recommended).
+   **Decided 18 November 2026: inbound links only.** `INBOUND_REQUIRED` is
+   the default in every posture, and `validate()` flags `ANY_DIRECTION` as an
+   issue.
 6. **Bootstrapping.** The first hubs in a region have no one to authenticate or
    be authenticated by, and an admin with no membership in an authenticated hub
    can never unlock theirs. Needs a genesis rule — e.g. release-signed initial
    bonds, or a time-limited grace for the first *n* hubs.
+   **Decided 18 November 2026: provisional status.** A hub with no certified
+   peer within 20 miles (32 km) is *provisional*:
+   - its members can query;
+   - it is shown as "not yet checked by another hub";
+   - it issues no portable credentials;
+   - it is not listed in search beyond its own area.
+
+   When it first learns of a certified peer within 20 miles, a 30-day clock
+   starts. It must gain an inbound link within those 30 days or fall back to
+   guest-only. It can recover from guest-only at any time with an inbound link
+   from any certified hub. Newcomers in a region that already has a certified
+   hub follow the normal rule (guest-only until linked). A newcomer arriving
+   never re-locks an existing hub, and only a certified peer starts the clock.
+
+   **Added 19 November 2026: an absolute 90-day cap.** Provisional status ends
+   90 days after a hub's creation even if no certified peer is ever within
+   20 miles; the hub then falls back to guest-only until it gains an inbound
+   link. The 30-day clock can only shorten this, never extend it. Members'
+   devices enforce both clocks: they know the hub's position and see nearby
+   hubs' cards, so a hub running modified code cannot stay provisional by
+   ignoring its neighbours.
 7. **HIGH_RISK hubs — improved.** Previously they did not audit, because
    regular traffic between two hubs is itself a signal; then they had to, with
    a daily rhythm. Now HIGH_RISK links run replay batched weekly over sync that
@@ -865,6 +1112,12 @@ do not fit cleanly. Each is marked in the code where it bites.
    asking regardless, and no synthetic probes. The remaining signal is the
    weekly opening exchange. An unlisted-hub exemption with a release-signed
    unlock token is still worth considering.
+   **Decided 19 November 2026:** weekly batched replay with no synthetic probes
+   stands. **There is no exemption** from being checked, by token or by
+   indefinite provisional status. Posture is self-declared, so an exemption
+   for "high-risk" hubs would be claimed by exactly the hubs checking exists
+   to catch: state actors, and traffickers or abusers wanting an unchecked
+   space. Posture changes *how* a hub is audited, never *whether*.
 8. **Self-declared skills are gone.** The neighbour who has grafted fruit trees
    for thirty years has no resource to earn it from. Either hubs list
    "mentoring" resources, or unverified declared skills return, labelled and
@@ -899,11 +1152,21 @@ do not fit cleanly. Each is marked in the code where it bites.
     `REPLAY_ONLY`'s small weekly sample below 8 members; not eliminated.
     Zero-knowledge proofs of inference would remove this and are not yet
     practical on phones.
-16. **Meeting requests are unreplayed.** Opening a private message between
-    two members to another hub was judged too intrusive, so the
-    `MEETING_REQUEST` surface — the one the censor treats hardest — is checked
-    only through receipts, not by replay. `HubPolicy.replayMeetingRequests`
-    exists for hubs that decide otherwise.
+    **Decided 19 November 2026: a fixed 30 replayed leaves per peer per
+    fortnight**, not a percentage. Detection depends on the number of leaves
+    sampled, not the share: 30 leaves catch a censor falsifying 10% of
+    decisions about 96% of the time, and 5% about 79%, at any hub size. A
+    percentage would read more questions at large hubs for no gain and too
+    few at small ones. The small-hub weekly sample below 8 members stands.
+16. **Meeting requests are replayed — decided 19 November 2026.** Previously
+    they were checked only through receipts, which prove a request was logged
+    but not that it was judged honestly, leaving the surface the censor
+    treats hardest (e.g. drug sales in a 150-character message) open to a
+    tampered censor. `HubPolicy.replayMeetingRequests` now defaults to on at
+    every posture, `validate()` flags it when off, and there is no HIGH_RISK
+    exemption, for the reason given under 7. Replayed requests carry no user
+    ids and are discarded after scoring, as with questions; the hub's
+    disclosure text says so.
 17. **Deterministic inference is a hard requirement.** Replay works only if
     every hub screens on the reference CPU backend with fixed threading. NNAPI
     or GPU paths would make honest hubs fail. The ±0.005 tolerance and the
@@ -914,6 +1177,13 @@ do not fit cleanly. Each is marked in the code where it bites.
     outline. Mature libraries are in Rust and Go; the plan is JNI. None is
     chosen. (The standard primitives they sit beside are now implemented on
     the JDK; see *Crypto and identity primitives*.)
+    **Decided 19 November 2026:** stage 4 is built behind seams that fail
+    closed, as `SkillCredentialScheme` already is. With no scheme bound, no
+    anonymous prober credential is issued or accepted, so no member can probe.
+    **Stage 4 (19 November 2026):** done that way. The nullifier and PSI-CA
+    turned out to need nothing beyond the JDK and are now real code; only the
+    BBS credential (`MemberCredentialScheme`) is a seam. Consequence: until
+    it is bound, no hub can be certified outside the tests.
 19. **Traffic bands are self-reported, sort of.** A hub's padded tree size sets
     the synthetic rate and the `REPLAY_ONLY` threshold. A hub that pads less
     to look quiet avoids synthetic probes, but replay and receipts still see
@@ -941,6 +1211,12 @@ do not fit cleanly. Each is marked in the code where it bites.
     with a wrong clock files screenings under the wrong day; one with a clock
     running backwards keeps appending to the open day, because closed days
     cannot change. A blackout makes NTP unavailable exactly when it matters.
+    **Decided 19 November 2026:**
+    - Hubs take time from network time (NTS-authenticated NTP where
+      available) when online, and from GNSS when offline.
+    - A hub with neither for 24 hours marks itself unsynced.
+    - Signed timestamps are accepted within ±10 minutes.
+    - A replay day's head or nonce is accepted within one day either side.
 24. **Who holds log replicas** (new, stage 2). Sync works between any devices
     that hold the hub key, and `authorise` decides who gets a session.
     Replicating the log to members' devices would make the hub survive the
@@ -963,21 +1239,58 @@ do not fit cleanly. Each is marked in the code where it bites.
     is about 0.85 s of the 36 s hourly budget, so roughly 40 a hour at best,
     shared with beacons. Fine for an outage. A design that relies on it at
     scale will not work.
+28. **Contact blocks outlive the fortnight** (new, 18 November). A reported
+    meeting blocks the pair until a moderator lifts it. Otherwise a reported
+    person could simply wait two weeks. On a seized device, a block says that
+    two people met and one of them reported it. That cost is accepted for
+    safeguarding, but it is the one meeting record not bound by the fortnight.
+29. **Who unlocks a hub after a restart** (new). The desktop store's key is
+    wrapped under an admin's passphrase. A hub that restarts unattended, after
+    a power cut say, stays locked until an admin types it. Keeping the key on
+    the machine instead means the machine gives up the hub when it is seized.
+    Which way to fail should probably follow posture.
+30. **Held questions have no queue** (new). A held meeting request goes to a
+    moderator, but a held question does not yet. The asker is told it is
+    being checked, and nothing more happens. Either questions get the same
+    queue, which means moderators read members' questions, or a held question
+    is simply refused with a reason. Neither is obviously right.
 
 ## Building
 
 Compile everything with warnings as errors, then run the tests:
 
 ```bash
-javac -Xlint:all -Werror -d /tmp/shalim-out $(find app/src/main/java -name '*.java')
-javac -Xlint:all -Werror -cp /tmp/shalim-out -d /tmp/shalim-test $(find app/src/test/java -name '*.java')
-java -cp /tmp/shalim-out:/tmp/shalim-test org.shalim.testing.TestRunner
+javac -J-XX:-UseBASE64Intrinsics -Xlint:all -Werror -d /tmp/shalim-out $(find app/src/main/java -name '*.java')
+javac -J-XX:-UseBASE64Intrinsics -Xlint:all -Werror -cp /tmp/shalim-out -d /tmp/shalim-test $(find app/src/test/java -name '*.java')
+java -XX:-UseBASE64Intrinsics -cp /tmp/shalim-out:/tmp/shalim-test org.shalim.testing.TestRunner
 ```
 
 Java 17+ (tested on 21). No dependencies: every algorithm comes from the JDK.
 There is no JUnit until Gradle arrives. Until then, `TestRunner` runs every
-`public static void test*()` method in the classes it lists (71 tests). The
-LAN tests bind TCP and UDP ports on loopback.
+`public static void test*()` method in the classes it lists (134 tests). The
+LAN tests bind TCP and UDP ports on loopback, and the store tests write to a
+temporary directory.
+
+### Java4Shell (CVE-2026-114938), disclosed 17 November 2026
+
+This is a memory-corruption flaw in HotSpot's AVX-512 Base64 decoding
+intrinsic. A short malformed Base64 input can write past a buffer, and reports
+describe remote code execution against servers that decode attacker-supplied
+Base64. It affects OpenJDK-based runtimes from 17.0.6 onwards, including 21
+and 25, on x86-64 CPUs with AVX-512 VBMI. ARM64 is not affected.
+
+What it means here:
+
+- **Shalim does not use `java.util.Base64` anywhere,** and it speaks no TLS.
+  The wire format, the store and the logs are binary or hex. That is now a
+  rule: keep Base64 out of anything that parses untrusted input.
+- **A desktop hub instance runs on HotSpot, so the JVM itself still needs
+  patching.** The fixed versions are, for example, Oracle 21.0.13.1, 17.0.21.1
+  and 25.0.5.1; other vendors release on their own schedules. Until a host is
+  patched, run with `-XX:-UseBASE64Intrinsics`, as the commands above now do.
+  It costs Shalim nothing.
+- **Android runs ART, not HotSpot,** so this particular intrinsic is not in
+  play on phones. Android's own security bulletins still apply.
 
 ## Roadmap
 
@@ -992,16 +1305,19 @@ LAN tests bind TCP and UDP ports on loopback.
 - [x] Anonymous probers; replay of committed censor decisions; organic and Poisson-scheduled synthetic probes; replay-only mode for quiet and small hubs
 - [x] Crypto and identity primitives; hub log, censor decision log, pins, attestations and network claims in real code, with tests
 - [x] Transport layer: secure channel, LAN transport, in-memory medium with real limits, replica sync with censor pin check, beacons, claim queries, creation check, disputes, presence
-- [ ] Decide the open design questions above, especially 1, 5, 6, 15, 16 and 21
+- [x] Hub core on stub models: creation, roster, roles, restrictions, policy, query pipeline, meetings, skills, attestations, retention, encrypted persistence
+- [x] Inter-hub authentication on stub models: link setup, replay, organic and synthetic probes, WebOfTrust, revocation and appeal, provisional status
+- [ ] Decide the open design questions above, especially 1, 5, 6, 15, 16, 21 and 29
 - [ ] Choose the linkable ring signature scheme and the shared skill taxonomy
-- [ ] Choose the anonymous credential, nullifier and PSI-CA schemes (open question 18)
+- [ ] Choose the anonymous credential scheme (open question 18); the nullifier and PSI-CA are now real code
+- [ ] Persist trust state (links, nonce seeds, ledger, heads, encryption key) and carry audit traffic over sync
 - [ ] Implement and test device key attestation on real Android and iOS devices
 - [ ] Independent review of `org.shalim.crypto` and the log formats
 - [ ] Measure cross-device determinism of the pinned TinyCensor (open question 17)
-- [ ] Sync path: compromise detection from censor pin mismatches (comparison done in stage 2)
+- [ ] Wire sync outcomes into `HubAdministration.onPeerDivergence` in the runtime loop (both halves exist)
 - [ ] Probe corpus contents, and a rotation policy for them
 - [ ] Gradle and Android project structure
-- [ ] Persistence (Room) mirroring the skills layer
+- [ ] Android persistence and keystore-wrapped store keys; device-side wallet, profile and pins
 - [ ] Model integration behind `CensorEngine` and `MatchmakerEngine`
 - [ ] Bluetooth mesh, LoRa and cellular radios (Android); model fetch
 - [ ] Independent safety and threat-model review before any real deployment

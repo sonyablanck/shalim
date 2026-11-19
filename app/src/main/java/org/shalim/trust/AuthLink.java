@@ -116,44 +116,210 @@ public class AuthLink {
     /** Whether the revoked hub's admins have lodged an appeal. */
     private boolean underAppeal;
 
+    /** Authenticating side: the peer's issuer public key, for heads and receipts. */
+    private byte[] subjectPublicKey;
+
+    /** Target side: the auditor's issuer key (statements) and encryption key (openings). */
+    private byte[] authenticatorPublicKey;
+    private byte[] authenticatorEncryptionKey;
+
+    /** Target side: the latest statement the auditor sent about this link. */
+    private LinkStatement latestStatement;
+
+    /** Last time scoreable evidence arrived. Dormancy counts from here. */
+    private Instant lastEvidenceAt;
+
+    /** Replay budget bookkeeping for the current fortnight of the nonce chain. */
+    private long fortnightIndex = -1;
+    private int realScoredThisFortnight;
+    private long openedReal;
+    private long openedTotal;
+
     public AuthLink() {
-        // TODO: pseudo-code
+        this.linkId = org.shalim.crypto.Bytes.randomId();
+        this.state = State.PENDING;
     }
 
     public AuthLink(String authenticatorKeyFingerprint, String subjectKeyFingerprint,
                     String probingAdminUserId, AuditSchedule.Mode mode, Instant now) {
-        // TODO: pseudo-code
+        this();
+        this.authenticatorKeyFingerprint = authenticatorKeyFingerprint;
+        this.subjectKeyFingerprint = subjectKeyFingerprint;
+        this.probingAdminUserId = probingAdminUserId;
+        this.mode = mode;
+        this.establishedAt = now;
+        this.stateChangedAt = now;
     }
 
     /** Target side: an inbound link, known only by pseudonym. */
     public static AuthLink inbound(String authenticatorKeyFingerprint, String ownKeyFingerprint,
                                    String linkPseudonym, byte[] nonceCommitment,
                                    AuditSchedule.Mode mode, Instant now) {
-        // PSEUDO-CODE
-        // link = new AuthLink(authenticator, own, probingAdminUserId = null, mode, now)
-        // link.linkPseudonym = linkPseudonym; link.nonceCommitment = nonceCommitment
-        // RETURN link
-        return null;
+        AuthLink link = new AuthLink(authenticatorKeyFingerprint, ownKeyFingerprint, null, mode, now);
+        link.linkPseudonym = linkPseudonym;
+        link.nonceCommitment = nonceCommitment == null ? null : nonceCommitment.clone();
+        return link;
     }
 
     /** Whether this link currently counts toward bonds and search. */
     public boolean counts(Instant now) {
-        // PSEUDO-CODE
-        // RETURN state IN (ACTIVE, SUSPENDED)
-        //    // INELIGIBLE never counts, however well the peer was behaving.
-        //    // SUSPENDED still counts: a single bad window is evidence to look
-        //    // at, not yet a verdict to act on.
-        return false;
+        // INELIGIBLE never counts, however well the peer was behaving.
+        // SUSPENDED still counts: one bad window is evidence to look at, not
+        // yet a verdict to act on.
+        return state == State.ACTIVE || state == State.SUSPENDED;
     }
 
     /** Whether this link has been positively revoked, as distinct from lapsing. */
     public boolean isRevoked() {
-        // TODO: pseudo-code
-        return false;
+        return state == State.REVOKED;
     }
 
     public void transition(State to, Instant now, String reasonRef) {
-        // TODO: pseudo-code
+        if (to == null || to == state) {
+            return;
+        }
+        if (state == State.REVOKED && to != State.ACTIVE) {
+            return; // only an upheld appeal brings a revoked link back
+        }
+        this.state = to;
+        this.stateChangedAt = now;
+        if (to == State.REVOKED) {
+            this.revocationId = reasonRef;
+        } else if (to == State.ACTIVE) {
+            this.revocationId = null;
+            this.underAppeal = false;
+        }
+    }
+
+    /**
+     * Target side: applies a statement from the authenticating hub, if it is
+     * signed by that hub and about this link. The target's copy then mirrors
+     * the auditor's decision; it never decides anything itself.
+     */
+    public boolean applyStatement(LinkStatement s, Instant now) {
+        if (s == null || authenticatorPublicKey == null || !s.verify(authenticatorPublicKey)
+                || !authenticatorKeyFingerprint.equals(s.getAuthenticatorKeyFingerprint())
+                || !subjectKeyFingerprint.equals(s.getSubjectKeyFingerprint())
+                || (linkPseudonym != null && !linkPseudonym.equals(s.getLinkPseudonym()))
+                || (latestStatement != null && !s.getIssuedAt().isAfter(latestStatement.getIssuedAt()))) {
+            return false;
+        }
+        latestStatement = s;
+        state = s.getState();
+        stateChangedAt = now;
+        if (state == State.REVOKED) {
+            revocationId = "statement:" + s.getIssuedAt();
+        }
+        return true;
+    }
+
+    /**
+     * Target side: whether this inbound link counts now. Only on a current
+     * statement: an expired one means nothing heard, which stops it counting
+     * without making it a revocation.
+     */
+    public boolean countsInbound(Instant now) {
+        return latestStatement != null && latestStatement.isCurrent(now) && counts(now);
+    }
+
+    void markPassed(Instant now) {
+        this.lastPassedAt = now;
+    }
+
+    void markEvidence(Instant now) {
+        this.lastEvidenceAt = now;
+    }
+
+    void setMode(AuditSchedule.Mode mode) {
+        this.mode = mode;
+    }
+
+    void setEligibility(ProberEligibility.Result result, Instant now) {
+        this.eligibility = result;
+        this.eligibilityCheckedAt = now;
+    }
+
+    void setLinkPseudonym(String pseudonym) {
+        this.linkPseudonym = pseudonym;
+    }
+
+    void setSubjectPublicKey(byte[] key) {
+        this.subjectPublicKey = key == null ? null : key.clone();
+    }
+
+    void setAuthenticatorKeys(byte[] signingKey, byte[] encryptionKey) {
+        this.authenticatorPublicKey = signingKey == null ? null : signingKey.clone();
+        this.authenticatorEncryptionKey = encryptionKey == null ? null : encryptionKey.clone();
+    }
+
+    void openAppeal() {
+        this.underAppeal = true;
+    }
+
+    void closeAppeal() {
+        this.underAppeal = false;
+    }
+
+    /** Replay budget: real leaves scored this fortnight, rolling over at fortnight boundaries. */
+    int realScoredThisFortnight(java.time.LocalDate day) {
+        rollFortnight(day);
+        return realScoredThisFortnight;
+    }
+
+    int dayInFortnight(java.time.LocalDate day) {
+        if (nonceChainStart == null) {
+            return 0;
+        }
+        long d = java.time.temporal.ChronoUnit.DAYS.between(nonceChainStart, day);
+        return Math.floorMod(d, AuditSchedule.FORTNIGHT_DAYS);
+    }
+
+    /** Share of real leaves among those opened so far; 1.0 before anything is opened. */
+    double realFraction() {
+        return openedTotal == 0 ? 1.0 : openedReal / (double) openedTotal;
+    }
+
+    void countOpened(java.time.LocalDate day, int real, int pads, int scored) {
+        rollFortnight(day);
+        openedReal += real;
+        openedTotal += real + pads;
+        realScoredThisFortnight += scored;
+    }
+
+    private void rollFortnight(java.time.LocalDate day) {
+        if (nonceChainStart == null) {
+            return;
+        }
+        long f = Math.floorDiv(java.time.temporal.ChronoUnit.DAYS.between(nonceChainStart, day),
+                (long) AuditSchedule.FORTNIGHT_DAYS);
+        if (f != fortnightIndex) {
+            fortnightIndex = f;
+            realScoredThisFortnight = 0;
+        }
+    }
+
+    public Instant getStateChangedAt() {
+        return stateChangedAt;
+    }
+
+    public Instant getLastEvidenceAt() {
+        return lastEvidenceAt;
+    }
+
+    public byte[] getSubjectPublicKey() {
+        return subjectPublicKey == null ? null : subjectPublicKey.clone();
+    }
+
+    public byte[] getAuthenticatorPublicKey() {
+        return authenticatorPublicKey == null ? null : authenticatorPublicKey.clone();
+    }
+
+    public byte[] getAuthenticatorEncryptionKey() {
+        return authenticatorEncryptionKey == null ? null : authenticatorEncryptionKey.clone();
+    }
+
+    public LinkStatement getLatestStatement() {
+        return latestStatement;
     }
 
     // --- accessors --------------------------------------------------------
@@ -199,11 +365,7 @@ public class AuthLink {
         return nonceChainStart;
     }
 
-    /**
-     * Authenticating side, at setup: makes a fresh chain and returns the
-     * anchor to send to the target. Wired in when link setup is implemented
-     * (stage 4).
-     */
+    /** Authenticating side, at setup: makes a fresh chain and returns the anchor to send to the target. */
     byte[] startNonceChain(java.time.LocalDate startDay) {
         org.shalim.crypto.Bytes.wipe(nonceSecret);
         this.nonceSecret = org.shalim.crypto.Bytes.random(32);

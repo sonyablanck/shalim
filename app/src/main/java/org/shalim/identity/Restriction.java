@@ -86,17 +86,104 @@ public class Restriction {
      */
     private String originHubId;
 
+    private Instant liftedAt;
+    private String liftedByUserId;
+    private String liftJustification;
+
+    /** Set by the origin hub's signed notice that its censor verifies again. */
+    private boolean originRemediated;
+
     public Restriction() {
-        // TODO: pseudo-code
+        this.restrictionId = org.shalim.crypto.Bytes.randomId();
+        this.appealable = true;
+        this.discharge = Discharge.MANUAL;
     }
 
+    /**
+     * A restriction applied now, with the default explanation for its reason.
+     * Refine it with the {@code with...} methods before applying it.
+     */
     public Restriction(String membershipId, Reason reason, Scope scope, Role roleCap) {
-        // TODO: pseudo-code
+        this();
+        if (scope == Scope.DEVICE_WIDE && reason != Reason.AGE_NOT_ASSURED) {
+            // Device-wide is for device-local causes. A reputational cap that
+            // applied everywhere regardless of hub policy would be exactly the
+            // global silencing this class exists to prevent.
+            throw new IllegalArgumentException("DEVICE_WIDE is reserved for age assurance");
+        }
+        this.membershipId = membershipId;
+        this.reason = reason;
+        this.scope = scope;
+        this.roleCap = roleCap;
+        this.appliedAt = Instant.now();
+        this.explanation = defaultExplanation(reason);
     }
 
+    public Restriction appliedAt(Instant when) {
+        this.appliedAt = when;
+        return this;
+    }
+
+    public Restriction appliedBy(String userId) {
+        this.appliedByUserId = userId;
+        return this;
+    }
+
+    /** Sets an expiry and makes expiry the discharge, unless another discharge was chosen. */
+    public Restriction expiring(Instant when) {
+        this.expiresAt = when;
+        if (discharge == Discharge.MANUAL) {
+            this.discharge = Discharge.EXPIRY;
+        }
+        return this;
+    }
+
+    public Restriction dischargedBy(Discharge discharge) {
+        this.discharge = discharge;
+        return this;
+    }
+
+    public Restriction originatingIn(String hubId) {
+        this.originHubId = hubId;
+        return this;
+    }
+
+    public Restriction explained(String explanation) {
+        if (explanation == null || explanation.isBlank()) {
+            throw new IllegalArgumentException("a restriction must always be explained");
+        }
+        this.explanation = explanation;
+        return this;
+    }
+
+    /** Use sparingly: almost every restriction should be contestable. */
+    public Restriction notAppealable() {
+        this.appealable = false;
+        return this;
+    }
+
+    static String defaultExplanation(Reason reason) {
+        if (reason == null) {
+            return "Your access here is limited for now.";
+        }
+        return switch (reason) {
+            case COMPROMISED_CENSOR -> "A hub you belong to cannot currently vouch for you, so you have guest access here.";
+            case AGE_NOT_ASSURED -> "This hub requires age assurance for full membership.";
+            case MODERATION_ACTION -> "A moderator has limited your access here.";
+            case PRESENCE_LAPSED -> "Guest access lasts while you are at the hub. Reconnect to its Wi-Fi to continue.";
+            case SELF_IMPOSED -> "You chose to step back from this hub.";
+        };
+    }
+
+    /** In force: applied, not lifted, not past its expiry. */
     public boolean isActive(Instant now) {
-        // TODO: pseudo-code
-        return false;
+        if (liftedAt != null) {
+            return false;
+        }
+        if (appliedAt != null && now.isBefore(appliedAt)) {
+            return false;
+        }
+        return expiresAt == null || now.isBefore(expiresAt);
     }
 
     /**
@@ -105,13 +192,35 @@ public class Restriction {
      * has chosen to trust the originating hub.
      */
     public boolean appliesIn(String hubId, org.shalim.hub.HubPolicy receivingPolicy) {
-        // TODO: pseudo-code
-        return false;
+        if (scope == null) {
+            return false;
+        }
+        return switch (scope) {
+            // Raised here, or carrying no origin because this hub raised it itself.
+            case THIS_HUB -> originHubId == null || originHubId.equals(hubId);
+            // No origin: this hub applied it on evidence it verified itself (an
+            // attestation it checked). With an origin: only by the receiving
+            // hub's own opt-in.
+            case FEDERATED -> originHubId == null || originHubId.equals(hubId)
+                    || (receivingPolicy != null && receivingPolicy.honoursRestrictionsFrom(originHubId));
+            case DEVICE_WIDE -> reason == Reason.AGE_NOT_ASSURED;
+        };
     }
 
+    /** Lifts the restriction. A justification is required, so lifting is as accountable as applying. */
     public boolean lift(String liftedByUserId, String justification) {
-        // TODO: pseudo-code
-        return false;
+        if (liftedAt != null || justification == null || justification.isBlank()) {
+            return false;
+        }
+        this.liftedAt = Instant.now();
+        this.liftedByUserId = liftedByUserId;
+        this.liftJustification = justification;
+        return true;
+    }
+
+    /** The origin hub announced, signed, that its censor verifies again. */
+    public void markOriginRemediated() {
+        this.originRemediated = true;
     }
 
     /**
@@ -119,13 +228,73 @@ public class Restriction {
      * in. Caller supplies the membership set so this class never holds it.
      */
     public boolean isDischarged(java.util.Set<String> currentHubIds, Instant now) {
-        // PSEUDO-CODE
-        // SWITCH discharge
-        //    MANUAL                 -> RETURN false          // only lift() clears it
-        //    EXPIRY                 -> RETURN expiresAt != null AND now > expiresAt
-        //    LEAVE_ORIGIN_HUB       -> RETURN NOT currentHubIds.contains(originHubId)
-        //    ORIGIN_HUB_REMEDIATED  -> RETURN false           // cleared by the origin hub
-        return false;
+        if (discharge == null) {
+            return false;
+        }
+        return switch (discharge) {
+            case MANUAL -> false; // only lift() clears it
+            case EXPIRY -> expiresAt != null && !now.isBefore(expiresAt);
+            case LEAVE_ORIGIN_HUB -> originHubId != null && currentHubIds != null
+                    && !currentHubIds.contains(originHubId);
+            case ORIGIN_HUB_REMEDIATED -> originRemediated;
+        };
+    }
+
+    public String getMembershipId() {
+        return membershipId;
+    }
+
+    public Instant getAppliedAt() {
+        return appliedAt;
+    }
+
+    public String getAppliedByUserId() {
+        return appliedByUserId;
+    }
+
+    public Instant getLiftedAt() {
+        return liftedAt;
+    }
+
+    public String getLiftedByUserId() {
+        return liftedByUserId;
+    }
+
+    public String getLiftJustification() {
+        return liftJustification;
+    }
+
+    public boolean isOriginRemediated() {
+        return originRemediated;
+    }
+
+    /** Restores persisted lift state. Persistence only. */
+    public void restoreLift(Instant liftedAt, String liftedByUserId, String justification) {
+        this.liftedAt = liftedAt;
+        this.liftedByUserId = liftedByUserId;
+        this.liftJustification = justification;
+    }
+
+    /** Restores a persisted restriction exactly. Persistence only. */
+    public static Restriction restore(String restrictionId, String membershipId, Reason reason, Scope scope,
+                                      Role roleCap, Instant appliedAt, Instant expiresAt, String appliedByUserId,
+                                      String explanation, boolean appealable, Discharge discharge,
+                                      String originHubId, boolean originRemediated) {
+        Restriction r = new Restriction();
+        r.restrictionId = restrictionId;
+        r.membershipId = membershipId;
+        r.reason = reason;
+        r.scope = scope;
+        r.roleCap = roleCap;
+        r.appliedAt = appliedAt;
+        r.expiresAt = expiresAt;
+        r.appliedByUserId = appliedByUserId;
+        r.explanation = explanation;
+        r.appealable = appealable;
+        r.discharge = discharge;
+        r.originHubId = originHubId;
+        r.originRemediated = originRemediated;
+        return r;
     }
 
     // --- accessors --------------------------------------------------------

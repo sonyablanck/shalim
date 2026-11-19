@@ -37,11 +37,23 @@ public class HubResource {
     }
 
     public HubResource() {
-        // TODO: pseudo-code
+        this.resourceId = org.shalim.crypto.Bytes.randomId();
+        this.skillIds = new java.util.ArrayList<>();
+        this.available = true;
+        this.kind = Kind.OTHER;
     }
 
     public HubResource(String hubId, String name, Kind kind) {
-        // TODO: pseudo-code
+        this();
+        this.hubId = hubId;
+        this.name = name;
+        this.kind = kind == null ? Kind.OTHER : kind;
+    }
+
+    public HubResource(String hubId, String name, Kind kind, String description, String location) {
+        this(hubId, name, kind);
+        this.description = description;
+        this.location = location;
     }
 
     /**
@@ -50,12 +62,37 @@ public class HubResource {
      * resources.
      */
     public List<Skill> deriveSkills(org.shalim.ml.MatchmakerEngine matchmaker) {
-        // TODO: pseudo-code
-        return null;
+        return matchmaker == null ? List.of() : matchmaker.deriveHubSkills(List.of(this));
     }
 
     public void setAvailable(boolean available) {
-        // TODO: pseudo-code
+        this.available = available;
+    }
+
+    public void setSkillIds(List<String> ids) {
+        this.skillIds = new java.util.ArrayList<>(ids);
+    }
+
+    public String getDescription() {
+        return description;
+    }
+
+    public String getHubId() {
+        return hubId;
+    }
+
+    public List<String> getSkillIds() {
+        return List.copyOf(skillIds);
+    }
+
+    /** Restores persisted state. Persistence only. */
+    public static HubResource restore(String id, String hubId, String name, Kind kind, String description,
+                                      String location, List<String> skillIds, boolean available) {
+        HubResource r = new HubResource(hubId, name, kind, description, location);
+        r.resourceId = id;
+        r.skillIds = new java.util.ArrayList<>(skillIds);
+        r.available = available;
+        return r;
     }
 
     // --- accessors --------------------------------------------------------

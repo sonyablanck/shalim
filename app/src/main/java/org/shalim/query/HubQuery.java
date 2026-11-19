@@ -30,18 +30,65 @@ public class HubQuery {
     /** Whether the asker consents to being named to the people they match. */
     private boolean revealAskerIdentity;
 
+    /** Longest question, in characters. Short enough to cross Bluetooth mesh in one frame. */
+    public static final int MAX_QUESTION_LENGTH = 280;
+
+    /** Most matches a query may ask for. Low, so queries cannot enumerate the hub. */
+    public static final int MAX_MATCHES = 5;
+
     public HubQuery() {
-        // TODO: pseudo-code
+        this.queryId = org.shalim.crypto.Bytes.randomId();
+        this.askedAt = Instant.now();
+        this.maxMatches = 3;
     }
 
     public HubQuery(String hubId, String askerUserId, String question) {
-        // TODO: pseudo-code
+        this();
+        this.hubId = hubId;
+        this.askerUserId = askerUserId;
+        this.question = question == null ? null : question.strip();
     }
 
-    /** Enforces length limits before the question hits a constrained transport. */
+    public HubQuery withMaxMatches(int n) {
+        this.maxMatches = n;
+        return this;
+    }
+
+    public HubQuery revealingAsker(boolean reveal) {
+        this.revealAskerIdentity = reveal;
+        return this;
+    }
+
+    public HubQuery askedAt(Instant when) {
+        this.askedAt = when;
+        return this;
+    }
+
+    void setVerdictId(String verdictId) {
+        this.verdictId = verdictId;
+    }
+
+    /** Recorded by the censor gate. Package-external callers use this. */
+    public void recordScreening(org.shalim.ml.Verdict verdict) {
+        this.verdictId = verdict == null ? null : verdict.getVerdictId();
+    }
+
+    public String getVerdictId() {
+        return verdictId;
+    }
+
+    /**
+     * Enforces length limits before the question hits a constrained transport:
+     * a question, of at most {@link #MAX_QUESTION_LENGTH} characters and
+     * {@code 4 × MAX_QUESTION_LENGTH} UTF-8 bytes, asking for 1 to
+     * {@link #MAX_MATCHES} matches, with a hub and an asker. Shape only;
+     * content is the censor's job.
+     */
     public boolean isWellFormed() {
-        // TODO: pseudo-code
-        return false;
+        return hubId != null && askerUserId != null && question != null && !question.isBlank()
+                && question.codePointCount(0, question.length()) <= MAX_QUESTION_LENGTH
+                && question.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 4 * MAX_QUESTION_LENGTH
+                && maxMatches >= 1 && maxMatches <= MAX_MATCHES;
     }
 
     // --- accessors --------------------------------------------------------

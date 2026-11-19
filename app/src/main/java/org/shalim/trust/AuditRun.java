@@ -88,12 +88,38 @@ public class AuditRun {
      */
     private boolean disclosed;
 
+    /** Replay: leaves the sample called for, real leaves scored, and of those, matches. */
+    private int replayExpected;
+    private int replayRealScored;
+    private int replayMatched;
+    private int replayPads;
+    private int replayUndetermined;
+
+    /** Replay: the peer's leaves came from a different censor release than ours. */
+    private boolean pinMismatch;
+
+    /** The local censor (or prober device's) was not verified, so nothing was measured. */
+    private boolean localUnverified;
+
+    /** Scoreable synthetic or organic outcomes needed before a run says anything. */
+    static final int MIN_SCOREABLE = 3;
+
     public AuditRun() {
-        // TODO: pseudo-code
+        this.runId = org.shalim.crypto.Bytes.randomId();
+        this.sample = new java.util.ArrayList<>();
+        this.localOutcomes = new java.util.ArrayList<>();
+        this.peerOutcomes = new java.util.ArrayList<>();
+        this.anomalies = new java.util.ArrayList<>();
+        this.scores = new java.util.ArrayList<>();
     }
 
     public AuditRun(String peerKeyFingerprint, ProbeCorpus corpus, long sampleSeed) {
-        // TODO: pseudo-code
+        this();
+        this.kind = Kind.SYNTHETIC;
+        this.peerKeyFingerprint = peerKeyFingerprint;
+        this.corpusVersion = corpus == null ? null : corpus.getVersion();
+        this.corpusHash = corpus == null ? null : corpus.getCorpusHash();
+        this.sampleSeed = sampleSeed;
     }
 
     /**
@@ -102,49 +128,48 @@ public class AuditRun {
      * attributable rather than merely mutual.
      */
     public Verdict verdict() {
-        // PSEUDO-CODE
-        //
-        // 1. VALIDITY GATE
-        //    IF corpus hashes differed
-        //       OR anomalies contain PROBE_DETECTION
-        //       OR (kind == SYNTHETIC AND sample not answered by both sides)
-        //       OR (kind == REPLAY AND the two hubs' censor pins differ)
-        //       RETURN VOID
-        //       // A peer that can spot probes can pass an audit it should fail,
-        //       // so once detection is suspected nothing else in the run means
-        //       // anything and none of it is recorded as a finding.
-        //
-        // 1b. REPLAY IS DECIDED DIRECTLY
-        //    IF kind == REPLAY
-        //       IF anomalies contain REPLAY_MISMATCH, EQUIVOCATION or
-        //          OPENING_WITHHELD attributed to PEER -> RETURN FAILED
-        //       IF every expected leaf opened and matched -> RETURN PASSED
-        //       RETURN INCONCLUSIVE
-        //
-        // 2. POWER GATE (synthetic and organic)
-        //    scoreable = outcomes WHERE isScoreable() on BOTH sides
-        //    IF scoreable.size() < policy minimum -> RETURN INCONCLUSIVE
-        //       // The usual exit. The window in WebOfTrust.assess decides.
-        //       // There is no FAIL-expectation requirement any more: synthetic
-        //       // probes are PASS-side only, and under-blocking is replay's job.
-        //
-        // 3. SCORE EACH SIDE AGAINST THE CORPUS, SEPARATELY
-        //    peerMisses  = scoreable WHERE NOT peerOutcome.satisfies(probe)
-        //    localMisses = scoreable WHERE NOT localOutcome.satisfies(probe)
-        //
-        // 4. ATTRIBUTE BEFORE CONCLUDING
-        //    IF localMisses materially exceed peerMisses -> RETURN LOCAL_FAULT
-        //       // The audit found the auditor. This is not a rare corner: a hub
-        //       // whose admin has been pressured into retuning its censor will
-        //       // find every honest peer "failing", and without this branch it
-        //       // would spend the web of trust convicting them one by one.
-        //
-        // 5. CONCLUDE ABOUT THE PEER
-        //    IF any anomaly WHERE attribution == PEER AND isConclusive()
-        //       RETURN FAILED
-        //    IF peerMisses within tolerance -> RETURN PASSED
-        //    RETURN INCONCLUSIVE
-        return null;
+        // 1. Validity gate. A run whose conditions were not met measures nothing.
+        if (localUnverified || pinMismatch || has(AuditAnomaly.Kind.PROBE_DETECTION)) {
+            return Verdict.VOID;
+        }
+        if (kind == Kind.SYNTHETIC && (sample.isEmpty() || localOutcomes.isEmpty() || peerOutcomes.isEmpty())) {
+            return Verdict.VOID;
+        }
+        // 1b. Replay is decided directly.
+        if (kind == Kind.REPLAY) {
+            for (AuditAnomaly a : anomalies) {
+                if (a.getAttribution() == AuditAnomaly.Attribution.PEER && (a.getKind() == AuditAnomaly.Kind.REPLAY_MISMATCH
+                        || a.getKind() == AuditAnomaly.Kind.EQUIVOCATION
+                        || a.getKind() == AuditAnomaly.Kind.UNLOGGED_DECISION
+                        || (a.getKind() == AuditAnomaly.Kind.OPENING_WITHHELD && a.isConfirmedOnRetry()))) {
+                    return Verdict.FAILED;
+                }
+            }
+            boolean allOpened = anomalies.stream().noneMatch(a -> a.getKind() == AuditAnomaly.Kind.OPENING_WITHHELD);
+            return allOpened && replayExpected > 0 && replayMatched == replayRealScored ? Verdict.PASSED
+                    : Verdict.INCONCLUSIVE;
+        }
+        // An unlogged receipt is conclusive whatever the sample size.
+        if (anomalies.stream().anyMatch(a -> a.isConclusive() && a.getKind() == AuditAnomaly.Kind.UNLOGGED_DECISION)) {
+            return Verdict.FAILED;
+        }
+        // 2. Power gate. The usual exit; the window decides.
+        List<DifferenceScore> scoreable = scores.stream().filter(DifferenceScore::isScoreable).toList();
+        if (scoreable.size() < MIN_SCOREABLE) {
+            return Verdict.INCONCLUSIVE;
+        }
+        // 3. Each side against the corpus, separately.
+        long peerMisses = scoreable.stream().filter(s -> !s.isPeerMetExpectation()).count();
+        long localMisses = scoreable.stream().filter(s -> !s.isLocalMetExpectation()).count();
+        // 4. Attribute before concluding: the audit may have found the auditor.
+        if (localMisses > peerMisses) {
+            return Verdict.LOCAL_FAULT;
+        }
+        // 5. Conclude about the peer.
+        if (anomalies.stream().anyMatch(AuditAnomaly::isConclusive)) {
+            return Verdict.FAILED;
+        }
+        return peerMisses == 0 ? Verdict.PASSED : Verdict.INCONCLUSIVE;
     }
 
     /**
@@ -153,14 +178,134 @@ public class AuditRun {
      * admin can actually fix, and the one they are least likely to look for.
      */
     public List<AuditAnomaly> flagged() {
-        // TODO: pseudo-code
-        return null;
+        List<AuditAnomaly> out = new java.util.ArrayList<>();
+        anomalies.stream().filter(AuditAnomaly::concernsAuditor).forEach(out::add);
+        anomalies.stream().filter(a -> !a.concernsAuditor()).forEach(out::add);
+        return out;
     }
 
     /** Probe ids that would be revealed by disclosing this run's findings. */
     public List<String> probesSpentByDisclosure() {
-        // TODO: pseudo-code
-        return null;
+        if (kind != Kind.SYNTHETIC) {
+            return List.of(); // replay cites the peer's own leaves; organic is never disclosed
+        }
+        List<String> out = new java.util.ArrayList<>();
+        for (AuditAnomaly a : anomalies) {
+            for (String id : a.getProbeIds()) {
+                if (!out.contains(id)) {
+                    out.add(id);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** A replay run against one peer for one day. */
+    public static AuditRun replay(String peerKeyFingerprint, java.time.LocalDate day, int expected, Instant now) {
+        AuditRun r = new AuditRun();
+        r.kind = Kind.REPLAY;
+        r.peerKeyFingerprint = peerKeyFingerprint;
+        r.replayExpected = expected;
+        r.startedAt = now;
+        return r;
+    }
+
+    /** A run carrying organic scores, or a receipt finding, from the prober's device. */
+    public static AuditRun organic(String peerKeyFingerprint, Instant now) {
+        AuditRun r = new AuditRun();
+        r.kind = Kind.ORGANIC;
+        r.peerKeyFingerprint = peerKeyFingerprint;
+        r.startedAt = now;
+        return r;
+    }
+
+    void addAnomaly(AuditAnomaly a) {
+        a.setRunId(runId);
+        anomalies.add(a);
+    }
+
+    void addProbe(TrustProbe probe, ProbeOutcome local, ProbeOutcome peer, DifferenceScore score) {
+        if (probe != null) {
+            sample.add(probe);
+        }
+        if (local != null) {
+            local.setRunId(runId);
+            localOutcomes.add(local);
+        }
+        if (peer != null) {
+            peer.setRunId(runId);
+            peerOutcomes.add(peer);
+        }
+        if (score != null) {
+            score.setRunId(runId);
+            scores.add(score);
+        }
+    }
+
+    void countReplay(boolean pad, boolean undetermined, boolean matched) {
+        if (pad) {
+            replayPads++;
+        } else if (undetermined) {
+            replayUndetermined++;
+        } else {
+            replayRealScored++;
+            if (matched) {
+                replayMatched++;
+            }
+        }
+    }
+
+    void markPinMismatch() {
+        this.pinMismatch = true;
+    }
+
+    void markLocalUnverified() {
+        this.localUnverified = true;
+    }
+
+    void complete(Instant now, org.shalim.transport.Transport.Kind via) {
+        if (this.startedAt == null) {
+            this.startedAt = now;
+        }
+        this.completedAt = now;
+        this.via = via;
+    }
+
+    void markDisclosed() {
+        this.disclosed = true;
+    }
+
+    boolean has(AuditAnomaly.Kind k) {
+        return anomalies.stream().anyMatch(a -> a.getKind() == k);
+    }
+
+    public List<TrustProbe> getSample() {
+        return sample;
+    }
+
+    public int getReplayExpected() {
+        return replayExpected;
+    }
+
+    /** Real (non-pad) leaves scored in this replay, excluding near-threshold ones. */
+    public int getReplayRealScored() {
+        return replayRealScored;
+    }
+
+    public int getReplayMatched() {
+        return replayMatched;
+    }
+
+    public int getReplayPads() {
+        return replayPads;
+    }
+
+    public int getReplayUndetermined() {
+        return replayUndetermined;
+    }
+
+    public boolean isPinMismatch() {
+        return pinMismatch;
     }
 
     // --- accessors --------------------------------------------------------

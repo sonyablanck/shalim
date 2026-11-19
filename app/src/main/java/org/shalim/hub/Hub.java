@@ -40,6 +40,16 @@ public class Hub {
      */
     private CensorDecisionLog censorLog;
 
+    /** Observed state of this hub's own censor. UNKNOWN until checked. */
+    private CensorIntegrity censorIntegrity = new CensorIntegrity();
+
+    /** Moderation decisions made here, about members or former members. */
+    private final java.util.List<org.shalim.attestation.ModerationOutcome> moderationOutcomes =
+            new java.util.ArrayList<>();
+
+    /** Meeting requests and meetings, kept for the meeting-request retention window. */
+    private final org.shalim.query.MeetingBook meetings = new org.shalim.query.MeetingBook();
+
     public Hub() {
         this.createdAt = Instant.now();
         this.log = new HubLog();
@@ -54,25 +64,12 @@ public class Hub {
         this.policy = policy;
     }
 
-    public Hub(String hubId, String name, HubPolicy policy,
-               HubLocation location, HubNetwork network, String foundingAdminUserId,
-               java.util.List<org.shalim.skills.HubResource> initialResources) {
-        this(hubId, name, policy, location, network, foundingAdminUserId);
-        // PSEUDO-CODE
-        // result = NetworkClaimService.mayCreateHubHere(observed BSSIDs,
-        //       attached BSSID, this device's ClaimPins, ClaimQueryClient)   // implemented
-        // IF result.check != ALLOWED
-        //    -> refuse creation; offer result.answers' hubs to join instead
-        //    // Checked before this hub's keys are made. No hub may be created on
-        //    // another hub's network.
-        // network.setClaim(NetworkClaimService.createClaim(BSSIDs, salt, hub key, now))   // implemented
-        // FOR EACH resource IN initialResources
-        //    skillsLayer.addResource(resource, censor)   // screened at RESOURCE_DESCRIPTION
-        // skillsLayer.deriveHubSkills(matchmaker)        // by the runtime at first start
-        // standing = UNAUTHENTICATED
-        // log HUB_CREATED, RESOURCE_ADDED per resource
-    }
-
+    /**
+     * Creation with resources, and everything else creation involves (the
+     * network-claim check, screening each resource, deriving hub skills,
+     * logging), is {@link HubAdministration#create}. This constructor only
+     * assembles state.
+     */
     public Hub(String hubId, String name, HubPolicy policy,
                HubLocation location, HubNetwork network, String foundingAdminUserId) {
         this(hubId, name, policy);
@@ -80,6 +77,8 @@ public class Hub {
         this.network = network;
         this.log = new HubLog(hubId);
         this.roster = new Roster();
+        this.skillsLayer = new SkillsLayer(hubId);
+        this.standing = new HubStanding();
         if (foundingAdminUserId != null && !foundingAdminUserId.isBlank()) {
             this.roster.add(new org.shalim.identity.Membership(
                 foundingAdminUserId, hubId, org.shalim.identity.Role.ADMIN));
@@ -145,6 +144,10 @@ public class Hub {
         }
     }
 
+    public void setRevision(long revision) {
+        this.revision = revision;
+    }
+
     public void bumpRevision() {
         this.revision += 1;
     }
@@ -207,6 +210,22 @@ public class Hub {
 
     public void setCensorLog(CensorDecisionLog censorLog) {
         this.censorLog = censorLog;
+    }
+
+    public CensorIntegrity getCensorIntegrity() {
+        return censorIntegrity;
+    }
+
+    public void setCensorIntegrity(CensorIntegrity integrity) {
+        this.censorIntegrity = integrity == null ? new CensorIntegrity() : integrity;
+    }
+
+    public java.util.List<org.shalim.attestation.ModerationOutcome> getModerationOutcomes() {
+        return moderationOutcomes;
+    }
+
+    public org.shalim.query.MeetingBook getMeetings() {
+        return meetings;
     }
 
     public void setHubId(String hubId) {

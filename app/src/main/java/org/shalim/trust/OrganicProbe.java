@@ -70,8 +70,14 @@ public class OrganicProbe {
 
     private Instant sentAt;
 
+    /** The hub answered a logged surface without committing a leaf. Conclusive once signed. */
+    private boolean answeredWithoutReceipt;
+
+    /** Set by {@link #toScore}; everything else is dropped by {@link #forget}. */
+    private DifferenceScore score;
+
     public OrganicProbe() {
-        // TODO: pseudo-code
+        this.probeId = org.shalim.crypto.Bytes.randomId();
     }
 
     /**
@@ -82,25 +88,27 @@ public class OrganicProbe {
     public static OrganicProbe shadow(String text, org.shalim.ml.CensorEngine.Surface surface,
                                       org.shalim.ml.CensorEngine deviceCensor,
                                       String peerKeyFingerprint, Instant now) {
-        // PSEUDO-CODE
-        // IF NOT deviceCensor.isVerified() -> RETURN null
-        //    // An unverified local copy would make the prober's device the
-        //    // outlier; skipping is better than scoring against it.
-        // probe = new OrganicProbe(peer, sha256(text), surface)
-        // probe.localVerdict = deviceCensor.assess(text, surface)
-        // RETURN probe
-        return null;
+        if (deviceCensor == null || !deviceCensor.isVerified() || text == null) {
+            // An unverified local copy would make the prober's device the
+            // outlier; skipping is better than scoring against it.
+            return null;
+        }
+        OrganicProbe p = new OrganicProbe();
+        p.peerKeyFingerprint = peerKeyFingerprint;
+        p.textHash = org.shalim.crypto.Hashing.sha256Hex(text);
+        p.surface = surface;
+        p.localVerdict = deviceCensor.assess(text, surface);
+        p.sentAt = now;
+        return p;
     }
 
     /** Records what came back. */
     public void observe(org.shalim.query.QueryResult result, Instant now) {
-        // PSEUDO-CODE
-        // peerOutcome = decision inferred from result: answered -> ALLOW,
-        //               held -> REVIEW, refused -> BLOCK; refusal wording kept
-        // receipt = result.censorReceipt
-        // IF receipt missing on a logged surface
-        //    -> the hub answered without committing; score as UNLOGGED_DECISION
-        return;
+        peerOutcome = ProbeOutcome.fromQueryResult(probeId, peerKeyFingerprint, result, now);
+        receipt = result == null ? null : result.getCensorReceipt();
+        // A screened answer, hold or refusal must carry a receipt. One without
+        // is the hub answering without committing.
+        answeredWithoutReceipt = result != null && receipt == null && peerOutcome.isScoreable();
     }
 
     /**
@@ -112,11 +120,12 @@ public class OrganicProbe {
      */
     public boolean checkInclusion(CensorDecisionLog.InclusionProof proof,
                                   CensorDecisionLog.SignedTreeHead headFromPeer) {
-        // PSEUDO-CODE
-        // inclusionChecked = true
-        // inclusionVerified = proof.verify(receipt.leafHash, headFromPeer.rootHash)
-        // RETURN inclusionVerified
-        return false;
+        inclusionChecked = true;
+        inclusionVerified = receipt != null && proof != null && headFromPeer != null
+                && receipt.getDay().equals(headFromPeer.getDay())
+                && proof.getLeafIndex() == receipt.getLeafIndex()
+                && proof.verify(receipt.getLeafHash(), headFromPeer.getRootHash());
+        return inclusionVerified;
     }
 
     /**
@@ -124,14 +133,24 @@ public class OrganicProbe {
      * pinned verdict rather than a corpus seed, because there is no seed.
      */
     public DifferenceScore toScore(org.shalim.ml.ProbeEngine prober) {
-        // PSEUDO-CODE
-        // RETURN prober.scoreOrganic(localVerdict, peerOutcome, source = ORGANIC)
-        return null;
+        score = prober != null ? prober.scoreOrganic(localVerdict, peerOutcome)
+                : ProbeScoring.scoreOrganic(probeId, localVerdict, peerOutcome);
+        return score;
     }
 
     /** Drops everything but the score. Called once the score has been forwarded. */
     public void forget() {
-        // TODO: pseudo-code
+        localVerdict = null;
+        peerOutcome = null;
+        textHash = null;
+    }
+
+    public boolean isAnsweredWithoutReceipt() {
+        return answeredWithoutReceipt;
+    }
+
+    public DifferenceScore getScore() {
+        return score;
     }
 
     public String getProbeId() {

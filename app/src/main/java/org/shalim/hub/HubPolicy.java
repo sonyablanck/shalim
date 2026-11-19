@@ -1,5 +1,6 @@
 package org.shalim.hub;
 
+import java.time.Instant;
 import java.util.List;
 import org.shalim.identity.AgeAssurance;
 
@@ -160,38 +161,351 @@ public class HubPolicy {
     /** Minutes a guest's presence proof stays valid after leaving the network. */
     private int guestPresenceTtlMinutes;
 
+    /** The fortnight. Fixed: may be shortened, never lengthened. */
+    public static final int MEETING_REQUEST_RETENTION_DAYS = 14;
+
     public HubPolicy() {
-        // TODO: pseudo-code
+        this.posture = Posture.COMMUNITY;
+        this.minimumAssuranceMethod = AgeAssurance.Method.SELF_DECLARED;
+        this.trustedRestrictionSources = new java.util.ArrayList<>();
+        this.censorFailureMode = CensorFailureMode.DISABLE_QUERIES;
+        this.unlockBasis = UnlockBasis.INBOUND_REQUIRED;
+        this.meetingRequestRetentionDays = MEETING_REQUEST_RETENTION_DAYS;
+        this.withholdOutcomesUnderAppeal = true;
+        this.encryptSkillsAtRest = true;
+        // Decided 19 November 2026: meeting requests are replayed at every hub.
+        // Receipts prove a request was logged, not that it was judged honestly.
+        this.replayMeetingRequests = true;
     }
 
-    /** Sensible defaults for a posture. Callers may then tighten, not loosen. */
+    /**
+     * Sensible defaults for a posture. Callers may then tighten, not loosen:
+     * {@link #validate()} reports any setting looser than its posture's
+     * default as an issue to be shown to admins and disclosed to members.
+     */
     public static HubPolicy defaultsFor(Posture posture) {
-        // TODO: pseudo-code
-        return null;
+        HubPolicy p = new HubPolicy();
+        p.posture = posture == null ? Posture.COMMUNITY : posture;
+        switch (p.posture) {
+            case INSTITUTIONAL -> {
+                // UK-style duty: self-declaration is not enough, so the floor is
+                // on-device estimation, which keeps no image.
+                p.requireAgeAssurance = true;
+                p.minimumAssuranceMethod = AgeAssurance.Method.ON_DEVICE_ESTIMATION;
+                p.censorFailureMode = CensorFailureMode.QUEUE_FOR_REVIEW;
+                p.attestationTtlHours = 168;
+                p.logRetentionDays = 90;
+                p.allowPanicWipe = false;
+                p.allowGuests = true;
+                p.guestPresenceTtlMinutes = 60;
+            }
+            case COMMUNITY -> {
+                p.requireAgeAssurance = false;
+                p.censorFailureMode = CensorFailureMode.QUEUE_FOR_REVIEW;
+                p.attestationTtlHours = 72;
+                p.logRetentionDays = 30;
+                p.allowPanicWipe = true;
+                p.allowGuests = true;
+                p.guestPresenceTtlMinutes = 30;
+            }
+            case HIGH_RISK -> {
+                // Minimal retention, nothing that identifies anyone, and no walk-ins:
+                // under surveillance a stranger on the Wi-Fi is as likely to be
+                // looking for the hub as looking for help.
+                p.requireAgeAssurance = false;
+                p.censorFailureMode = CensorFailureMode.DISABLE_QUERIES;
+                p.attestationTtlHours = 48;
+                p.logRetentionDays = 7;
+                p.allowPanicWipe = true;
+                p.allowGuests = false;
+                p.guestPresenceTtlMinutes = 15;
+            }
+        }
+        return p;
     }
 
     /** Whether this hub honours a restriction raised by another hub. */
     public boolean honoursRestrictionsFrom(String originHubId) {
-        // TODO: pseudo-code
-        return false;
+        return originHubId != null && trustedRestrictionSources.contains(originHubId);
     }
 
     /** Whether a user's assurance state permits more than guest access here. */
     public boolean permitsFullMembership(AgeAssurance assurance) {
-        // TODO: pseudo-code
-        return false;
+        return permitsFullMembership(assurance, Instant.now());
     }
 
-    /** Flags internally inconsistent policy, e.g. HIGH_RISK with external attestation. */
+    public boolean permitsFullMembership(AgeAssurance assurance, Instant now) {
+        if (!requireAgeAssurance) {
+            return true;
+        }
+        return assurance != null && assurance.isValid(now) && assurance.satisfies(minimumAssuranceMethod);
+    }
+
+    /** Flags internally inconsistent or loosened policy. Empty means consistent. */
     public List<String> validate() {
-        // TODO: pseudo-code
-        return null;
+        List<String> issues = new java.util.ArrayList<>();
+        HubPolicy floor = defaultsFor(posture);
+        if (censorFailureMode == null) {
+            issues.add("No censor failure mode is set.");
+        }
+        if (requireAgeAssurance && (minimumAssuranceMethod == null
+                || minimumAssuranceMethod == AgeAssurance.Method.NONE)) {
+            issues.add("Age assurance is required but no acceptable method is set.");
+        }
+        if (allowGuests && guestPresenceTtlMinutes <= 0) {
+            issues.add("Guests are allowed but their presence proofs would expire immediately.");
+        }
+        if (attestationTtlHours <= 0) {
+            issues.add("Attestations would expire immediately.");
+        }
+        if (meetingRequestRetentionDays > MEETING_REQUEST_RETENTION_DAYS) {
+            issues.add("Meeting requests are kept longer than a fortnight.");
+        }
+        if (unlockBasis == UnlockBasis.ANY_DIRECTION) {
+            // Decided 18 November 2026: only an inbound link is evidence about
+            // this hub's own censor.
+            issues.add("This hub can unlock by auditing others, which says nothing about its own censor.");
+        }
+        if (!replayMeetingRequests) {
+            // No posture is exempt: posture is self-declared, so an exemption
+            // would be claimed by exactly the hubs replay exists to catch.
+            issues.add("Meeting requests are kept out of replay, so a tampered censor could pass them unseen.");
+        }
+        if (federateModerationOutcomes && !withholdOutcomesUnderAppeal) {
+            issues.add("Moderation outcomes would be shared while still under appeal.");
+        }
+        if (posture == Posture.HIGH_RISK) {
+            if (requireAgeAssurance && minimumAssuranceMethod == AgeAssurance.Method.EXTERNAL_ATTESTATION) {
+                issues.add("HIGH_RISK with external age attestation leaves an identity trail outside the hub.");
+            }
+            if (publishRestrictions || federateModerationOutcomes) {
+                issues.add("HIGH_RISK hubs should not share restrictions or moderation outcomes.");
+            }
+            if (!encryptSkillsAtRest) {
+                issues.add("HIGH_RISK hubs must encrypt the skills layer at rest.");
+            }
+        }
+        if (posture == Posture.INSTITUTIONAL && !requireAgeAssurance) {
+            issues.add("INSTITUTIONAL hubs are expected to require age assurance.");
+        }
+        // Looser than the posture's floor.
+        if (logRetentionDays > floor.logRetentionDays) {
+            issues.add("Log retention is longer than the " + posture + " default of "
+                    + floor.logRetentionDays + " days.");
+        }
+        if (attestationTtlHours > floor.attestationTtlHours) {
+            issues.add("Attestations last longer than the " + posture + " default.");
+        }
+        if (floor.requireAgeAssurance && requireAgeAssurance && minimumAssuranceMethod != null
+                && minimumAssuranceMethod.compareTo(floor.minimumAssuranceMethod) < 0) {
+            issues.add("The accepted age-assurance method is weaker than the " + posture + " default.");
+        }
+        if (!floor.allowGuests && allowGuests) {
+            issues.add("Walk-in guests are allowed, which the " + posture + " posture does not.");
+        }
+        if (floor.allowPanicWipe && !allowPanicWipe) {
+            issues.add("Panic wipe is off, which the " + posture + " posture expects on.");
+        }
+        return issues;
     }
 
     /** Plain-language summary shown before joining, so consent is informed. */
     public String disclosureSummary() {
-        // TODO: pseudo-code
-        return null;
+        StringBuilder b = new StringBuilder();
+        b.append(switch (posture) {
+            case INSTITUTIONAL -> "This hub is run by an accountable institution.";
+            case COMMUNITY -> "This is a community-run hub.";
+            case HIGH_RISK -> "This hub keeps as little as possible, because it operates under risk.";
+        }).append('\n');
+        b.append(requireAgeAssurance
+                ? "Full membership needs age assurance (" + describe(minimumAssuranceMethod)
+                  + " or stronger). Nothing that identifies you is kept, only that you were assured."
+                : "No age check is asked for.").append('\n');
+        b.append("Activity records are kept for ").append(logRetentionDays)
+                .append(" days; meeting requests for ").append(meetingRequestRetentionDays).append(" days.\n");
+        b.append(encryptSkillsAtRest ? "Skills held here are encrypted on the hub's devices."
+                : "Skills held here are not encrypted on the hub's devices.").append('\n');
+        if (allowPanicWipe) {
+            b.append("Admins can wipe this hub's data from a device in an emergency.\n");
+        }
+        b.append(allowGuests ? "Walk-in guests may use resources while they are here."
+                : "There are no walk-in guests.").append('\n');
+        b.append(trustedRestrictionSources.isEmpty() ? "Restrictions from other hubs are not honoured."
+                : "Restrictions from " + trustedRestrictionSources.size() + " other hub(s) are honoured.").append('\n');
+        b.append(federateModerationOutcomes ? "Moderation decisions here may be shared with other hubs."
+                : "Moderation decisions here stay here.").append('\n');
+        b.append(replayMeetingRequests
+                ? "To check this hub's safety screening, another hub's device may briefly read a small random sample"
+                  + " of questions and meeting requests, with no names attached, and then discard them."
+                : "Meeting requests are not checked by other hubs.").append('\n');
+        b.append(requireGoodStanding ? "Full membership needs a current proof of good standing."
+                : "No proof of good standing is asked for.");
+        return b.toString();
+    }
+
+    private static String describe(AgeAssurance.Method m) {
+        if (m == null) {
+            return "any method";
+        }
+        return switch (m) {
+            case NONE -> "no check";
+            case SELF_DECLARED -> "your own declaration";
+            case VOUCHED_BY_MEMBER -> "an adult member vouching";
+            case ON_DEVICE_ESTIMATION -> "estimation on your own device, keeping no image";
+            case EXTERNAL_ATTESTATION -> "a yes/no from an outside provider";
+        };
+    }
+
+    // --- changes ----------------------------------------------------------
+    // Applied through HubAdministration.changePolicy, which checks
+    // EDIT_HUB_POLICY, logs POLICY_CHANGED and re-runs validate().
+
+    /** A blank policy at a posture, for restoring persisted settings through the setters. */
+    public static HubPolicy restoring(Posture posture) {
+        HubPolicy p = new HubPolicy();
+        p.posture = posture;
+        p.trustedRestrictionSources = new java.util.ArrayList<>();
+        return p;
+    }
+
+    public HubPolicy copy() {
+        HubPolicy p = new HubPolicy();
+        p.hubId = hubId;
+        p.posture = posture;
+        p.requireAgeAssurance = requireAgeAssurance;
+        p.minimumAssuranceMethod = minimumAssuranceMethod;
+        p.trustedRestrictionSources = new java.util.ArrayList<>(trustedRestrictionSources);
+        p.publishRestrictions = publishRestrictions;
+        p.requireGoodStanding = requireGoodStanding;
+        p.federateModerationOutcomes = federateModerationOutcomes;
+        p.withholdOutcomesUnderAppeal = withholdOutcomesUnderAppeal;
+        p.attestationTtlHours = attestationTtlHours;
+        p.requiredCensorPinHash = requiredCensorPinHash;
+        p.censorFailureMode = censorFailureMode;
+        p.unlockBasis = unlockBasis;
+        p.auditSchedule = auditSchedule;
+        p.replayMeetingRequests = replayMeetingRequests;
+        p.logRetentionDays = logRetentionDays;
+        p.meetingRequestRetentionDays = meetingRequestRetentionDays;
+        p.encryptSkillsAtRest = encryptSkillsAtRest;
+        p.allowPanicWipe = allowPanicWipe;
+        p.allowGuests = allowGuests;
+        p.guestPresenceTtlMinutes = guestPresenceTtlMinutes;
+        return p;
+    }
+
+    public void setHubId(String hubId) {
+        this.hubId = hubId;
+    }
+
+    public void setAgeAssurance(boolean require, AgeAssurance.Method minimum) {
+        this.requireAgeAssurance = require;
+        this.minimumAssuranceMethod = minimum;
+    }
+
+    public void trustRestrictionsFrom(String hubId) {
+        if (hubId != null && !trustedRestrictionSources.contains(hubId)) {
+            trustedRestrictionSources.add(hubId);
+        }
+    }
+
+    public void distrustRestrictionsFrom(String hubId) {
+        trustedRestrictionSources.remove(hubId);
+    }
+
+    public void setPublishRestrictions(boolean publish) {
+        this.publishRestrictions = publish;
+    }
+
+    public void setRequireGoodStanding(boolean require) {
+        this.requireGoodStanding = require;
+    }
+
+    public void setFederateModerationOutcomes(boolean federate) {
+        this.federateModerationOutcomes = federate;
+    }
+
+    public void setWithholdOutcomesUnderAppeal(boolean withhold) {
+        this.withholdOutcomesUnderAppeal = withhold;
+    }
+
+    public void setAttestationTtlHours(int hours) {
+        this.attestationTtlHours = hours;
+    }
+
+    public void setRequiredCensorPinHash(String hash) {
+        this.requiredCensorPinHash = hash;
+    }
+
+    public void setCensorFailureMode(CensorFailureMode mode) {
+        this.censorFailureMode = mode;
+    }
+
+    public void setUnlockBasis(UnlockBasis basis) {
+        this.unlockBasis = basis;
+    }
+
+    public void setAuditSchedule(org.shalim.trust.AuditSchedule schedule) {
+        this.auditSchedule = schedule;
+    }
+
+    public void setReplayMeetingRequests(boolean replay) {
+        this.replayMeetingRequests = replay;
+    }
+
+    public void setLogRetentionDays(int days) {
+        if (days < 1) {
+            throw new IllegalArgumentException("at least one day of log is needed to sync");
+        }
+        this.logRetentionDays = days;
+    }
+
+    /** May be shortened, never lengthened past a fortnight. */
+    public void setMeetingRequestRetentionDays(int days) {
+        if (days < 1 || days > MEETING_REQUEST_RETENTION_DAYS) {
+            throw new IllegalArgumentException("meeting requests are kept between 1 and 14 days");
+        }
+        this.meetingRequestRetentionDays = days;
+    }
+
+    public void setEncryptSkillsAtRest(boolean encrypt) {
+        this.encryptSkillsAtRest = encrypt;
+    }
+
+    public void setAllowPanicWipe(boolean allow) {
+        this.allowPanicWipe = allow;
+    }
+
+    public void setAllowGuests(boolean allow) {
+        this.allowGuests = allow;
+    }
+
+    public void setGuestPresenceTtlMinutes(int minutes) {
+        this.guestPresenceTtlMinutes = minutes;
+    }
+
+    public String getHubId() {
+        return hubId;
+    }
+
+    public AgeAssurance.Method getMinimumAssuranceMethod() {
+        return minimumAssuranceMethod;
+    }
+
+    public List<String> getTrustedRestrictionSources() {
+        return List.copyOf(trustedRestrictionSources);
+    }
+
+    public boolean isPublishRestrictions() {
+        return publishRestrictions;
+    }
+
+    public boolean isEncryptSkillsAtRest() {
+        return encryptSkillsAtRest;
+    }
+
+    public boolean isAllowPanicWipe() {
+        return allowPanicWipe;
     }
 
     // --- accessors --------------------------------------------------------

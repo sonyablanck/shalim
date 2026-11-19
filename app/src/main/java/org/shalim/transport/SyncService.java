@@ -340,7 +340,11 @@ public class SyncService implements Transport.FrameListener {
         if (t == null || !job.fits(t)) {
             return false;
         }
-        byte[] inner = Wire.writer().u8(MessageType.DELIVERY).u8(Wire.ordinal(job)).bytes(payload).done();
+        if (payload == null || payload.length > 0xffff) {
+            return false;
+        }
+        byte[] inner = Wire.writer().u8(MessageType.DELIVERY).u8(Wire.ordinal(job)).u16(payload.length).done();
+        inner = Bytes.concat(inner, payload);
         if (inner.length + SecureChannel.Session.overhead() > t.maxPayloadBytes()) {
             return false;
         }
@@ -719,7 +723,7 @@ public class SyncService implements Transport.FrameListener {
 
         private void onDelivery(Wire.Reader r) {
             Job j = r.enumValue(Job.class);
-            byte[] payload = r.bytes(TransportProfile.WIFI_MAX_FRAME);
+            byte[] payload = r.fixed(r.u16());
             r.end();
             if (j == Job.MEETING_REQUEST && payload != null) {
                 deliverySink.accept(peer, new Delivery(j, payload));

@@ -63,8 +63,8 @@ public class GuestUser extends User {
      * key with a signature from the old one, contradicted that and has been
      * dropped. The cost: a guest's earlier visits can be linked to the account
      * they become. Upgrading means the person chose to carry those skills
-     * across, so that link is the point. Memberships, wallet and skill
-     * profile copying is still pseudo-code, because those classes are.
+     * across, so that link is the point. Memberships, wallet, skill profile and
+     * age assurance move across unchanged.
      *
      * @param binding this device's binding, whose slot must hold this guest's key
      */
@@ -77,7 +77,13 @@ public class GuestUser extends User {
             return null;
         }
         RegisteredUser upgraded = new RegisteredUser(key, displayName);
-        // PSEUDO-CODE: upgraded.memberships = memberships; wallet; skillProfile
+        for (Membership m : memberships) {
+            upgraded.adopt(m);
+        }
+        upgraded.wallet = wallet;
+        upgraded.skillProfile = skillProfile;
+        upgraded.ageAssurance = ageAssurance;
+        upgraded.deviceBinding = binding;
         return upgraded;
     }
 

@@ -52,22 +52,52 @@ public class UserSkill {
      */
     private boolean offered;
 
+    /** A skill not reconfirmed for this long ranks lower, and is shown as possibly rusty. */
+    public static final java.time.Duration STALE_AFTER = java.time.Duration.ofDays(730);
+
     public UserSkill() {
-        // TODO: pseudo-code
+        this.userSkillId = org.shalim.crypto.Bytes.randomId();
+        this.offered = true;
     }
 
     public UserSkill(SkillCredential credential) {
-        // TODO: pseudo-code
+        this();
+        this.credential = credential;
+        this.holderKeyFingerprint = credential.getSubjectKeyFingerprint();
+        this.taxonomyTerm = credential.getTaxonomyTerm();
+        this.proficiency = credential.getProficiency();
+        this.earnedAt = dayStart(credential.getIssuedOn());
+        this.lastConfirmedAt = earnedAt;
+    }
+
+    private static Instant dayStart(java.time.LocalDate day) {
+        return day == null ? null : day.atStartOfDay(java.time.ZoneOffset.UTC).toInstant();
     }
 
     public boolean isStale(Instant now) {
-        // TODO: pseudo-code
-        return false;
+        return lastConfirmedAt == null || lastConfirmedAt.plus(STALE_AFTER).isBefore(now);
     }
 
     /** Merges a newer credential for the same term, keeping the higher proficiency. */
     public void reconfirm(SkillCredential newer) {
-        // TODO: pseudo-code
+        if (newer == null || !java.util.Objects.equals(taxonomyTerm, newer.getTaxonomyTerm())) {
+            return;
+        }
+        Instant at = dayStart(newer.getIssuedOn());
+        if (newer.getProficiency() != null && (proficiency == null || newer.getProficiency().compareTo(proficiency) > 0)) {
+            proficiency = newer.getProficiency();
+            credential = newer; // present the credential that proves the higher level
+        }
+        if (at != null && (lastConfirmedAt == null || at.isAfter(lastConfirmedAt))) {
+            lastConfirmedAt = at;
+            if (credential == null || newer.getProficiency() == proficiency) {
+                credential = newer;
+            }
+        }
+    }
+
+    public void setOffered(boolean offered) {
+        this.offered = offered;
     }
 
     // --- accessors --------------------------------------------------------

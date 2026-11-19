@@ -2,6 +2,7 @@ package org.shalim.attestation;
 
 import java.time.Instant;
 import org.shalim.hub.Hub;
+import org.shalim.hub.HubPolicy;
 
 /**
  * Hub-side issuer of {@link Attestation}s about its own members.
@@ -26,12 +27,27 @@ public class AttestationIssuer {
      */
     private java.time.Duration attestationTtl;
 
+    private transient Hub hub;
+    private transient org.shalim.crypto.Signer issuerKey;
+
     public AttestationIssuer() {
-        // TODO: pseudo-code
+        this.attestationTtl = java.time.Duration.ofHours(72);
     }
 
     public AttestationIssuer(Hub hub) {
-        // TODO: pseudo-code
+        this();
+        this.hub = hub;
+        this.hubId = hub.getHubId();
+        if (hub.getPolicy() != null && hub.getPolicy().getAttestationTtlHours() > 0) {
+            this.attestationTtl = java.time.Duration.ofHours(hub.getPolicy().getAttestationTtlHours());
+        }
+    }
+
+    /** The issuer as the hub runtime builds it, holding the hub's issuer key. */
+    public AttestationIssuer(Hub hub, org.shalim.crypto.Signer issuerKey) {
+        this(hub);
+        this.issuerKey = issuerKey;
+        this.issuerKeyFingerprint = issuerKey.fingerprint();
     }
 
     /**
@@ -39,61 +55,86 @@ public class AttestationIssuer {
      * caps the member elsewhere without telling anyone why.
      */
     public Attestation issueGoodStanding(String subjectKeyFingerprint, Instant now) {
-        // PSEUDO-CODE
-        //
-        // 1. IF subject is not a member here -> RETURN null
-        //
-        // 2. IF this hub's censorIntegrity.requiresRestriction()
-        //       RETURN null
-        //       // The flagged-hub condition, expressed as withheld proof.
-        //       // Note MISMATCHED restricts but UNAVAILABLE does not: a member
-        //       // who has simply not downloaded the model yet is not suspect.
-        //
-        // 3. IF subject has an active, non-overturned ModerationOutcome here
-        //       RETURN null
-        //
-        // 4. RETURN signed Attestation(
-        //       claim = GOOD_STANDING,
-        //       subject = subjectKeyFingerprint,
-        //       issuer = issuerKeyFingerprint,
-        //       expiresAt = now + attestationTtl)
-        //       // No hubId, no display name, no membership list. A receiving
-        //       // hub learns "some hub it may trust vouches for this key".
-        return null;
+        if (!canIssue() || hub.getRoster().membershipOf(subjectKeyFingerprint).isEmpty()) {
+            return null;
+        }
+        if (hasActiveOutcome(subjectKeyFingerprint, now)) {
+            return null;
+        }
+        // No hubId, no display name, no membership list. A receiving hub learns
+        // "some hub it may trust vouches for this key".
+        return Attestation.issue(Attestation.Claim.GOOD_STANDING, subjectKeyFingerprint, issuerKey, now,
+                now.plus(attestationTtl), null);
+    }
+
+    private boolean hasActiveOutcome(String subject, Instant now) {
+        for (ModerationOutcome o : hub.getModerationOutcomes()) {
+            if (subject.equals(o.getSubjectKeyFingerprint()) && o.isActive(now)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
      * Issues a shareable record of a moderation decision. Only for outcomes the
-     * hub has explicitly marked federatable.
+     * hub has explicitly marked federatable, and never one under appeal where
+     * policy withholds them: a contested finding is not exported as settled fact.
      */
     public Attestation issueOutcomeAttestation(ModerationOutcome outcome, Instant now) {
-        // PSEUDO-CODE
-        //
-        // 1. IF NOT outcome.federatable -> RETURN null
-        // 2. IF outcome.overturned OR NOT outcome.isActive(now) -> RETURN null
-        // 3. IF outcome.underAppeal AND policy withholds during appeal
-        //       RETURN null
-        //       // Do not export a contested finding as settled fact.
-        // 4. RETURN signed Attestation(
-        //       claim = ACTIVE_MODERATION_OUTCOME,
-        //       outcomeId = outcome.outcomeId,
-        //       expiresAt = min(now + attestationTtl, outcome.expiresAt))
-        return null;
+        if (issuerKey == null || outcome == null || !outcome.isFederatable() || !outcome.isActive(now)) {
+            return null;
+        }
+        if (hub.getPolicy() != null && !hub.getPolicy().isFederateModerationOutcomes()) {
+            return null;
+        }
+        boolean withhold = hub.getPolicy() == null || hub.getPolicy().isWithholdOutcomesUnderAppeal();
+        if (outcome.isUnderAppeal() && withhold) {
+            return null;
+        }
+        Instant expires = now.plus(attestationTtl);
+        if (outcome.getExpiresAt().isBefore(expires)) {
+            expires = outcome.getExpiresAt();
+        }
+        return Attestation.issue(Attestation.Claim.ACTIVE_MODERATION_OUTCOME, outcome.getSubjectKeyFingerprint(),
+                issuerKey, now, expires, outcome.getOutcomeId());
     }
 
-    /** Issues an adult attestation. Carries no date of birth or document data. */
-    public Attestation issueAdult(String subjectKeyFingerprint, Instant now) {
-        // TODO: pseudo-code
-        return null;
+    /**
+     * Issues an adult attestation. Carries no date of birth or document data.
+     * Only for a member whose assurance this hub has itself seen and accepted
+     * under its own policy.
+     */
+    public Attestation issueAdult(String subjectKeyFingerprint, org.shalim.identity.AgeAssurance seen, Instant now) {
+        if (!canIssue() || hub.getRoster().membershipOf(subjectKeyFingerprint).isEmpty()
+                || seen == null || !seen.isValid(now)) {
+            return null;
+        }
+        HubPolicy policy = hub.getPolicy();
+        if (policy != null && policy.isRequireAgeAssurance() && !seen.satisfies(policy.getMinimumAssuranceMethod())) {
+            return null;
+        }
+        Instant expires = now.plus(attestationTtl);
+        Instant assuranceEnds = seen.getAssuredAt().plus(org.shalim.identity.AgeAssurance.validityOf(seen.getMethod()));
+        if (assuranceEnds.isBefore(expires)) {
+            expires = assuranceEnds;
+        }
+        return Attestation.issue(Attestation.Claim.ADULT, subjectKeyFingerprint, issuerKey, now, expires, null);
     }
 
     /**
      * Whether this hub is currently able to vouch for anyone. False while its
-     * censor is flagged.
+     * censor is flagged, and while it holds no key.
      */
     public boolean canIssue() {
-        // TODO: pseudo-code
-        return false;
+        return issuerKey != null && hub != null
+                && (hub.getCensorIntegrity() == null || !hub.getCensorIntegrity().requiresRestriction())
+                // A provisional hub has not been checked, so it vouches for no one elsewhere.
+                && (hub.getStanding() == null || hub.getStanding().getState() != org.shalim.hub.HubStanding.State.PROVISIONAL);
+    }
+
+    public java.time.Duration getAttestationTtl() {
+        return attestationTtl;
     }
 
     public String getIssuerKeyFingerprint() {

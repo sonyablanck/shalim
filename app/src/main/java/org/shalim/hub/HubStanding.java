@@ -26,6 +26,18 @@ import org.shalim.identity.Role;
  * {@link HubPolicy.UnlockBasis#INBOUND_REQUIRED}, because an outbound link is
  * evidence about the <em>peer's</em> censor, not this hub's.
  *
+ * <h2>Provisional status (decided 18 and 19 November 2026)</h2>
+ *
+ * <p>A hub with no certified peer within 20 miles is {@link State#PROVISIONAL}:
+ * its members can query, it is shown as "not yet checked by another hub", it
+ * issues no portable credentials, and it is not listed beyond its own area.
+ * It ends at the earlier of 90 days from creation and 30 days from first
+ * learning of a certified peer within 20 miles; the hub then falls to
+ * guest-only until it gains an inbound link. A hub whose only inbound links
+ * are all revoked is provisional for 30 days from the revocation. See
+ * {@link ProvisionalStatus}, which members' devices also run, so a hub cannot
+ * stay provisional by ignoring its neighbours.
+ *
  * <h2>Failing open after unlock</h2>
  *
  * <p>Once unlocked, a hub re-locks only when every inbound link has been
@@ -43,6 +55,12 @@ public class HubStanding {
         /** Unlocked. No cap. */
         AUTHENTICATED,
         /**
+         * Not yet checked, but within its provisional period: no cap, shown as
+         * "not yet checked by another hub", no portable credentials, not listed
+         * beyond its own area. Ends at {@link #getProvisionalUntil()}.
+         */
+        PROVISIONAL,
+        /**
          * Was unlocked; every inbound link has since been revoked on evidence.
          * Non-admins capped at GUEST again. Shown to admins with the evidence
          * route; shown to members only as "this hub is re-establishing
@@ -57,51 +75,139 @@ public class HubStanding {
     private int bonds;
     private Instant everUnlockedAt;
     private Instant computedAt;
+    private Instant provisionalUntil;
 
+    private static final String UNAUTHENTICATED_TEXT = "This hub is new and hasn't been checked by another hub yet."
+            + " Until it is, you can use its resources and earn skills, but not search for people.";
+    private static final String PROVISIONAL_TEXT = "This hub hasn't been checked by another hub yet.";
+    private static final String REVOKED_TEXT = "This hub is re-establishing its checks with other hubs."
+            + " Until it does, you can use its resources and earn skills, but not search for people.";
+
+    /** A new hub: never unlocked. */
     public HubStanding() {
-        // TODO: pseudo-code
+        this.state = State.UNAUTHENTICATED;
+        this.computedAt = Instant.now();
     }
 
-    /** The derivation. Pure function of link counts, history and policy. */
+    /** The derivation without provisional status: a hub with no clock is never provisional. */
     public static HubStanding compute(int outboundCounting, int inboundCounting, int bonds,
                                       Instant everUnlockedAt, boolean allInboundRevoked,
                                       HubPolicy.UnlockBasis basis, Instant now) {
-        // PSEUDO-CODE
-        //
-        // qualifies = basis == ANY_DIRECTION  ? outboundCounting + inboundCounting >= 1
-        //           : basis == INBOUND_REQUIRED ? inboundCounting >= 1
-        //
-        // IF qualifies                       -> AUTHENTICATED; everUnlockedAt ?= now
-        // ELSE IF everUnlockedAt == null     -> UNAUTHENTICATED
-        // ELSE IF allInboundRevoked          -> REVOKED
-        // ELSE                               -> AUTHENTICATED
-        //    // Unlocked before and nothing revoked: links are merely dormant or
-        //    // expired. Fail open.
-        return null;
+        return compute(outboundCounting, inboundCounting, bonds, everUnlockedAt, allInboundRevoked, basis, null, now);
+    }
+
+    /** The derivation. Pure function of link counts, history, the provisional clock and policy. */
+    public static HubStanding compute(int outboundCounting, int inboundCounting, int bonds,
+                                      Instant everUnlockedAt, boolean allInboundRevoked,
+                                      HubPolicy.UnlockBasis basis, ProvisionalStatus provisional, Instant now) {
+        HubPolicy.UnlockBasis b = basis == null ? HubPolicy.UnlockBasis.INBOUND_REQUIRED : basis;
+        boolean qualifies = b == HubPolicy.UnlockBasis.ANY_DIRECTION
+                ? outboundCounting + inboundCounting >= 1
+                : inboundCounting >= 1;
+        HubStanding s = new HubStanding();
+        s.outboundCounting = outboundCounting;
+        s.inboundCounting = inboundCounting;
+        s.bonds = bonds;
+        s.computedAt = now;
+        s.everUnlockedAt = everUnlockedAt;
+        if (qualifies) {
+            s.state = State.AUTHENTICATED;
+            if (s.everUnlockedAt == null) {
+                s.everUnlockedAt = now;
+            }
+        } else if (everUnlockedAt == null) {
+            Instant until = provisional == null ? null : provisional.deadline(false);
+            if (until != null && now.isBefore(until)) {
+                s.state = State.PROVISIONAL;
+                s.provisionalUntil = until;
+            } else {
+                s.state = State.UNAUTHENTICATED;
+            }
+        } else if (allInboundRevoked) {
+            // Decided 18 November 2026: losing the only inbound link to
+            // revocation makes a hub provisional for 30 days, so no single
+            // peer can silence it, while a broken hub still loses access.
+            Instant until = provisional == null ? null : provisional.deadline(true);
+            if (until != null && now.isBefore(until)) {
+                s.state = State.PROVISIONAL;
+                s.provisionalUntil = until;
+            } else {
+                s.state = State.REVOKED;
+            }
+        } else {
+            // Unlocked before and nothing revoked: links are merely dormant or
+            // expired. Fail open.
+            s.state = State.AUTHENTICATED;
+        }
+        return s;
     }
 
     /** The cap this standing puts on one membership. Null = no cap. */
     public Role roleCapFor(Membership membership) {
-        // PSEUDO-CODE
-        // IF state == AUTHENTICATED -> RETURN null
-        // IF membership.role == ADMIN -> RETURN null
-        //    // Admins must be able to fix it.
-        // RETURN GUEST
-        return null;
+        if (state == State.AUTHENTICATED || state == State.PROVISIONAL) {
+            return null;
+        }
+        if (membership != null && membership.getRole() == Role.ADMIN) {
+            return null; // Admins must be able to fix it.
+        }
+        return Role.GUEST;
     }
 
-    /** Plain-language explanation for a capped member. */
+    /**
+     * Plain-language explanation for a capped member. Deliberately never says
+     * "revoked": members are not told another hub found fault, only that the
+     * hub is not currently checked.
+     */
     public String explain() {
-        // PSEUDO-CODE
-        // UNAUTHENTICATED -> "This hub is new and hasn't been checked by another
-        //    hub yet. Until it is, you can use its resources and earn skills,
-        //    but not search for people."
-        // REVOKED -> "This hub is re-establishing its checks with other hubs.
-        //    Until it does, you can use its resources and earn skills, but not
-        //    search for people."
-        //    // Deliberately does not say "revoked". Members are not told another
-        //    // hub found fault, only that the hub is not currently checked.
-        return null;
+        return switch (state) {
+            case AUTHENTICATED -> null;
+            case UNAUTHENTICATED -> UNAUTHENTICATED_TEXT;
+            case PROVISIONAL -> PROVISIONAL_TEXT;
+            case REVOKED -> REVOKED_TEXT;
+        };
+    }
+
+    /** What a member is told when a hub has never computed its standing. */
+    public static String unauthenticatedExplanation() {
+        return UNAUTHENTICATED_TEXT;
+    }
+
+    /** Restores persisted state. Persistence only. */
+    public static HubStanding restore(State state, int outbound, int inbound, int bonds, Instant everUnlockedAt,
+                                      Instant computedAt) {
+        return restore(state, outbound, inbound, bonds, everUnlockedAt, computedAt, null);
+    }
+
+    /** Restores persisted state, with the provisional deadline. Persistence only. */
+    public static HubStanding restore(State state, int outbound, int inbound, int bonds, Instant everUnlockedAt,
+                                      Instant computedAt, Instant provisionalUntil) {
+        HubStanding s = new HubStanding();
+        s.state = state;
+        s.outboundCounting = outbound;
+        s.inboundCounting = inbound;
+        s.bonds = bonds;
+        s.everUnlockedAt = everUnlockedAt;
+        s.computedAt = computedAt;
+        s.provisionalUntil = provisionalUntil;
+        return s;
+    }
+
+    /**
+     * Whether the hub may issue anything portable: attestations, skill
+     * credentials. Only once checked by another hub; never while provisional,
+     * so an unchecked hub cannot vouch for anyone elsewhere.
+     */
+    public boolean issuesPortableCredentials() {
+        return state == State.AUTHENTICATED;
+    }
+
+    /** Whether the hub may be listed in search beyond its own area. */
+    public boolean listedBeyondOwnArea() {
+        return state == State.AUTHENTICATED;
+    }
+
+    public Instant getProvisionalUntil() {
+        return provisionalUntil;
     }
 
     public boolean isAuthenticated() {

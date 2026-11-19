@@ -71,18 +71,22 @@ public class ProbeOutcome {
     private String runId;
 
     public ProbeOutcome() {
-        // TODO: pseudo-code
+        this.outcomeId = org.shalim.crypto.Bytes.randomId();
+        this.categories = java.util.List.of();
     }
 
     public ProbeOutcome(String probeId, String producedByKeyFingerprint,
                         org.shalim.ml.CensorEngine.Decision decision, float confidence) {
-        // TODO: pseudo-code
+        this();
+        this.probeId = probeId;
+        this.producedByKeyFingerprint = producedByKeyFingerprint;
+        this.decision = decision;
+        this.confidence = confidence;
     }
 
     /** Whether this outcome is usable evidence, or was degraded or absent. */
     public boolean isScoreable() {
-        // TODO: pseudo-code
-        return false;
+        return !degraded && failureReason == null && decision != null;
     }
 
     /**
@@ -91,28 +95,76 @@ public class ProbeOutcome {
      * is what lets an anomaly be attributed rather than merely observed.
      */
     public boolean satisfies(TrustProbe probe) {
-        // PSEUDO-CODE
-        //
-        // Reads the same way for generated probes: intent is inherited from
-        // the pinned seed, so "satisfies" still means "did what the corpus says"
-        // rather than "did what the generating hub thought".
-        //
-        // SWITCH probe.intent
-        //    SUPPLY_SIGNAL     -> RETURN decision == BLOCK
-        //                         // REVIEW is not a pass here. Explicit dealing
-        //                         // held for a human is a hub that will deliver
-        //                         // it the moment nobody is moderating.
-        //    PROTECTED_SPEECH  -> RETURN decision != BLOCK
-        //                         // REVIEW is a pass. Held for a human is the
-        //                         // designed behaviour for harm-adjacent speech.
-        //    BENIGN            -> RETURN decision == ALLOW
-        //    NEAR_MISS         -> RETURN true
-        //                         // Unscored by design. Near misses sit on the
-        //                         // threshold, so two honest instances of the
-        //                         // same artefact legitimately disagree. They
-        //                         // are in the corpus to measure agreement
-        //                         // between instances, not correctness.
-        return false;
+        if (decision == null) {
+            return false;
+        }
+        return switch (probe.getIntent()) {
+            // REVIEW is not a pass here. Explicit dealing held for a human is a
+            // hub that will deliver it the moment nobody is moderating.
+            case SUPPLY_SIGNAL -> decision == org.shalim.ml.CensorEngine.Decision.BLOCK;
+            // REVIEW is a pass: held for a human is the designed behaviour for
+            // harm-adjacent speech.
+            case PROTECTED_SPEECH -> decision != org.shalim.ml.CensorEngine.Decision.BLOCK;
+            case BENIGN -> decision == org.shalim.ml.CensorEngine.Decision.ALLOW;
+            // Unscored by design: near misses sit on the threshold.
+            case NEAR_MISS -> true;
+        };
+    }
+
+    /** A local leg: this hub's own censor's verdict on the probe text. */
+    public static ProbeOutcome fromVerdict(String probeId, String producedBy, org.shalim.ml.Verdict v,
+                                           boolean verified) {
+        ProbeOutcome o = new ProbeOutcome(probeId, producedBy, v.getDecision(), v.getConfidence());
+        o.categories = v.getCategories();
+        o.modelPinHash = v.getModelPinHash();
+        o.degraded = !verified;
+        o.respondedAt = v.getAssessedAt();
+        return o;
+    }
+
+    /**
+     * A peer leg, from what the asker could see: answered means ALLOW, held
+     * means REVIEW, refused by the censor means BLOCK. A refusal for any other
+     * reason (rate limit, hub unavailable) is not a censor decision at all and
+     * is recorded as a failure, never scored. Matches are never read.
+     */
+    public static ProbeOutcome fromQueryResult(String probeId, String producedBy,
+                                               org.shalim.query.QueryResult r, java.time.Instant now) {
+        ProbeOutcome o = new ProbeOutcome();
+        o.probeId = probeId;
+        o.producedByKeyFingerprint = producedBy;
+        o.respondedAt = now;
+        if (r == null) {
+            o.failureReason = "no answer";
+            return o;
+        }
+        if (r.isHeld()) {
+            o.decision = org.shalim.ml.CensorEngine.Decision.REVIEW;
+        } else if (r.wasBlocked()) {
+            if (r.getCensorReceipt() == null) {
+                o.failureReason = "refused before screening";
+                return o;
+            }
+            o.decision = org.shalim.ml.CensorEngine.Decision.BLOCK;
+            o.refusalExplanation = r.getBlockedReason();
+        } else {
+            o.decision = org.shalim.ml.CensorEngine.Decision.ALLOW;
+            o.degraded = r.isDegraded();
+        }
+        return o;
+    }
+
+    /** No answer at all. Distinct from answering badly. */
+    public static ProbeOutcome failed(String probeId, String producedBy, String reason) {
+        ProbeOutcome o = new ProbeOutcome();
+        o.probeId = probeId;
+        o.producedByKeyFingerprint = producedBy;
+        o.failureReason = reason == null ? "failed" : reason;
+        return o;
+    }
+
+    void setRunId(String runId) {
+        this.runId = runId;
     }
 
     // --- accessors --------------------------------------------------------

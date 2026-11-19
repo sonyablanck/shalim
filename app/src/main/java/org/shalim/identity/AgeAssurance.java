@@ -35,24 +35,53 @@ public class AgeAssurance {
     /** Opaque token from the attestation provider. Must not be linkable to an identity. */
     private String attestationRef;
 
+    /**
+     * How long an assurance lasts before it must be renewed. Self-declaration
+     * lapses soonest, because it is cheapest to make. A child who declared
+     * themselves an adult at twelve should not still be "assured" at fifteen.
+     */
+    public static java.time.Duration validityOf(Method method) {
+        return switch (method) {
+            case NONE -> java.time.Duration.ZERO;
+            case SELF_DECLARED -> java.time.Duration.ofDays(90);
+            case VOUCHED_BY_MEMBER -> java.time.Duration.ofDays(365);
+            case ON_DEVICE_ESTIMATION, EXTERNAL_ATTESTATION -> java.time.Duration.ofDays(730);
+        };
+    }
+
     public AgeAssurance() {
-        // TODO: pseudo-code
+        this.method = Method.NONE;
+        this.assuredAdult = false;
     }
 
     public AgeAssurance(Method method, boolean assuredAdult) {
-        // TODO: pseudo-code
+        this(method, assuredAdult, Instant.now(), null);
+    }
+
+    public AgeAssurance(Method method, boolean assuredAdult, Instant assuredAt, String attestationRef) {
+        this.method = method == null ? Method.NONE : method;
+        this.assuredAdult = assuredAdult && this.method != Method.NONE;
+        this.assuredAt = assuredAt;
+        this.attestationRef = attestationRef;
     }
 
     /** Assurance can lapse so a minor's account does not stay unassured forever. */
     public boolean isValid(Instant now) {
-        // TODO: pseudo-code
-        return false;
+        return assuredAdult && assuredAt != null && method != Method.NONE
+                && !now.isBefore(assuredAt) && now.isBefore(assuredAt.plus(validityOf(method)));
     }
 
-    /** Strength ordering, so a policy can demand better than self-declaration. */
+    /**
+     * Strength ordering, so a policy can demand better than self-declaration.
+     * The enum's order is the strength order.
+     */
     public boolean satisfies(Method minimumMethod) {
-        // TODO: pseudo-code
-        return false;
+        return assuredAdult && method != Method.NONE
+                && (minimumMethod == null || method.compareTo(minimumMethod) >= 0);
+    }
+
+    public String getAttestationRef() {
+        return attestationRef;
     }
 
     public Method getMethod() {

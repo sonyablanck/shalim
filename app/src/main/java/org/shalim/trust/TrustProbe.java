@@ -98,43 +98,49 @@ public class TrustProbe {
     private boolean paraphrased;
 
     public TrustProbe() {
-        // TODO: pseudo-code
+        this.probeId = org.shalim.crypto.Bytes.randomId();
+        this.paraphrased = false;
     }
 
     public TrustProbe(String text, org.shalim.ml.CensorEngine.Surface surface, Intent intent) {
-        // TODO: pseudo-code
+        this();
+        if (text == null || surface == null || intent == null) {
+            throw new IllegalArgumentException("a probe needs text, surface and intent");
+        }
+        this.text = text;
+        this.textHash = org.shalim.crypto.Hashing.sha256Hex(text);
+        this.lengthChars = text.length();
+        this.surface = surface;
+        this.intent = intent;
     }
 
     /** Builds a generated probe that inherits intent, surface and category from its seed. */
     public static TrustProbe generated(TrustProbe seed, String text, long generationSeed,
                                        LocalDate day, org.shalim.ml.ModelPin generatorPin) {
-        // PSEUDO-CODE
-        // probe = new TrustProbe(text, seed.surface, seed.intent)
-        // probe.category = seed.category
-        // probe.seedProbeId = seed.probeId; probe.corpusVersion = corpus version
-        // probe.generationSeed = generationSeed; probe.generatedFor = day
-        // probe.generatorPinHash = generatorPin.artefactHash
-        // probe.textHash = sha256(text); probe.paraphrased = text != seed.text
-        // RETURN probe
-        return null;
+        TrustProbe probe = new TrustProbe(text, seed.surface, seed.intent);
+        probe.category = seed.category;
+        probe.seedProbeId = seed.probeId;
+        probe.corpusVersion = seed.corpusVersion;
+        probe.generationSeed = generationSeed;
+        probe.generatedFor = day;
+        probe.generatorPinHash = generatorPin == null ? null : generatorPin.getArtefactHash();
+        probe.paraphrased = seed.text == null || !seed.text.equals(text);
+        return probe;
     }
 
     /** PASS, FAIL or UNSCORED, from the intent. */
     public Expectation expectation() {
-        // PSEUDO-CODE
-        // SWITCH intent
-        //    BENIGN, PROTECTED_SPEECH -> PASS
-        //    SUPPLY_SIGNAL            -> FAIL
-        //    NEAR_MISS                -> UNSCORED
-        return null;
+        return switch (intent) {
+            case BENIGN, PROTECTED_SPEECH -> Expectation.PASS;
+            case SUPPLY_SIGNAL -> Expectation.FAIL;
+            case NEAR_MISS -> Expectation.UNSCORED;
+        };
     }
 
     /** Whether this probe is expected to produce censor action rather than an answer. */
     public boolean expectsCensorAction() {
-        // PSEUDO-CODE
-        // RETURN expectation() == FAIL
-        //     OR (intent == NEAR_MISS AND surface == MEETING_REQUEST)
-        return false;
+        return expectation() == Expectation.FAIL
+                || (intent == Intent.NEAR_MISS && surface == org.shalim.ml.CensorEngine.Surface.MEETING_REQUEST);
     }
 
     /**
@@ -142,20 +148,31 @@ public class TrustProbe {
      * is only ever run against this hub's own censor.
      */
     public boolean sendableToPeer() {
-        // PSEUDO-CODE
-        // RETURN intent != SUPPLY_SIGNAL
-        return false;
+        return intent != Intent.SUPPLY_SIGNAL;
     }
 
     /** Whether a block on this probe counts against the hub. True for PASS probes. */
     public boolean blockIsFailure() {
-        // TODO: pseudo-code
-        return false;
+        return expectation() == Expectation.PASS;
     }
 
     /** Drops the plaintext once the run is scored. The ledger keeps the hash and seed. */
     public void forgetText() {
-        // TODO: pseudo-code
+        this.text = null;
+    }
+
+    /** A corpus seed with a fixed id and category, as release tooling builds them. */
+    public static TrustProbe seed(String probeId, String text, org.shalim.ml.CensorEngine.Surface surface,
+                                  Intent intent, org.shalim.ml.CensorEngine.Category category) {
+        TrustProbe p = new TrustProbe(text, surface, intent);
+        p.probeId = probeId;
+        p.seedProbeId = probeId;
+        p.category = category;
+        return p;
+    }
+
+    void setCorpusVersion(String version) {
+        this.corpusVersion = version;
     }
 
     // --- accessors --------------------------------------------------------

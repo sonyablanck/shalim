@@ -49,17 +49,40 @@ public class ReciprocityInvite {
     private Instant expiresAt;
 
     public ReciprocityInvite() {
-        // TODO: pseudo-code
+        this.inviteId = org.shalim.crypto.Bytes.randomId();
+        this.status = Status.SENT;
     }
 
+    /** Unanswered invites lapse after this, silently. */
+    public static final java.time.Duration TTL = java.time.Duration.ofDays(30);
+
     public ReciprocityInvite(String fromHubKeyFingerprint, String toHubKeyFingerprint,
-                             String invitingAdminUserId, Instant now) {
-        // TODO: pseudo-code
+                             String invitingAdminUserId, String membershipInvitationId, Instant now) {
+        this();
+        this.fromHubKeyFingerprint = fromHubKeyFingerprint;
+        this.toHubKeyFingerprint = toHubKeyFingerprint;
+        this.invitingAdminUserId = invitingAdminUserId;
+        this.membershipInvitationId = membershipInvitationId;
+        this.sentAt = now;
+        this.expiresAt = now.plus(TTL);
     }
 
     public boolean isOpen(Instant now) {
-        // TODO: pseudo-code
-        return false;
+        if (status == Status.SENT && !now.isBefore(expiresAt)) {
+            status = Status.LAPSED; // declined and expired look the same, by design
+        }
+        return status == Status.SENT;
+    }
+
+    /** A peer admin joined and set up a link back. */
+    public void accepted() {
+        if (status == Status.SENT) {
+            status = Status.ACCEPTED;
+        }
+    }
+
+    public String getMembershipInvitationId() {
+        return membershipInvitationId;
     }
 
     // --- accessors --------------------------------------------------------
